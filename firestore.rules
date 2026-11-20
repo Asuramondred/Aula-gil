@@ -1,0 +1,401 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Helpers
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isClassroomOwner(classroomId) {
+      return exists(/databases/$(database)/documents/classrooms/$(classroomId)) &&
+        get(/databases/$(database)/documents/classrooms/$(classroomId)).data.ownerId == request.auth.uid;
+    }
+
+    // Entity Validators
+    function isValidClassroom(data) {
+      return data.keys().hasAll(['ownerId', 'name', 'schoolName', 'teacherName', 'cycle', 'activePeriod', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'name', 'schoolName', 'teacherName', 'cycle', 'activePeriod', 'createdAt', 'updatedAt'])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && data.schoolName is string && data.schoolName.size() <= 120
+        && data.teacherName is string && data.teacherName.size() <= 100
+        && data.cycle is string && data.cycle.size() >= 1 && data.cycle.size() <= 40
+        && data.activePeriod is string && data.activePeriod.size() >= 1 && data.activePeriod.size() <= 40
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStudent(data, classroomId) {
+      return data.keys().hasAll([
+          'ownerId', 'classroomId', 'listNumber', 'fullName', 'curp', 'birthDate',
+          'guardianName', 'guardianPhone', 'guardianEmail', 'medicalNotes', 'pedagogicalNotes',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'classroomId', 'listNumber', 'fullName', 'curp', 'birthDate',
+          'guardianName', 'guardianPhone', 'guardianEmail', 'medicalNotes', 'pedagogicalNotes',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.classroomId == classroomId
+        && data.listNumber is int && data.listNumber >= 1 && data.listNumber <= 200
+        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120
+        && data.curp is string && data.curp.size() <= 30
+        && data.birthDate is string && data.birthDate.size() <= 20
+        && data.guardianName is string && data.guardianName.size() <= 120
+        && data.guardianPhone is string && data.guardianPhone.size() <= 30
+        && data.guardianEmail is string && data.guardianEmail.size() <= 120
+        && data.medicalNotes is string && data.medicalNotes.size() <= 1000
+        && data.pedagogicalNotes is string && data.pedagogicalNotes.size() <= 1500
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStudentFile(data, classroomId) {
+      return data.keys().hasAll([
+          'ownerId', 'classroomId', 'studentId', 'title', 'category',
+          'fileName', 'mimeType', 'sizeBytes', 'storageMode', 'dataUrl',
+          'externalUrl', 'notes', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'classroomId', 'studentId', 'title', 'category',
+          'fileName', 'mimeType', 'sizeBytes', 'storageMode', 'dataUrl',
+          'externalUrl', 'notes', 'createdAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.classroomId == classroomId
+        && isValidId(data.studentId)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && data.category in ['acta', 'curp', 'boleta', 'medica', 'evidencia', 'otro']
+        && data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 160
+        && data.mimeType is string && data.mimeType.size() >= 1 && data.mimeType.size() <= 100
+        && data.sizeBytes is int && data.sizeBytes >= 0 && data.sizeBytes <= 800000
+        && data.storageMode in ['inline', 'link']
+        && data.dataUrl is string && data.dataUrl.size() <= 750000
+        && data.externalUrl is string && data.externalUrl.size() <= 1000
+        && data.notes is string && data.notes.size() <= 500
+        && data.createdAt is timestamp;
+    }
+
+    function isValidAttendanceDay(data, classroomId, dateId) {
+      return data.keys().hasAll(['ownerId', 'classroomId', 'date', 'records', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'classroomId', 'date', 'records', 'updatedAt'])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.classroomId == classroomId
+        && data.date is string && data.date == dateId && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.records is map && data.records.keys().size() <= 80
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAssignment(data, classroomId) {
+      return data.keys().hasAll(['ownerId', 'classroomId', 'period', 'title', 'type', 'dueDate', 'description', 'submissions', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'classroomId', 'period', 'title', 'type', 'dueDate', 'description', 'submissions', 'createdAt', 'updatedAt'])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.classroomId == classroomId
+        && data.period is string && data.period.size() >= 1 && data.period.size() <= 40
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && data.type in ['cuaderno', 'tarea', 'trabajo']
+        && data.dueDate is string && data.dueDate.size() <= 20
+        && data.description is string && data.description.size() <= 500
+        && data.submissions is map && data.submissions.keys().size() <= 80
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidIncident(data, classroomId) {
+      return data.keys().hasAll([
+          'ownerId', 'classroomId', 'studentId', 'date', 'category', 'severity',
+          'description', 'actionTaken', 'aiReportParents', 'aiReportDirection',
+          'reportGeneratedAt', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'classroomId', 'studentId', 'date', 'category', 'severity',
+          'description', 'actionTaken', 'aiReportParents', 'aiReportDirection',
+          'reportGeneratedAt', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.classroomId == classroomId
+        && isValidId(data.studentId)
+        && data.date is string && data.date.size() >= 1 && data.date.size() <= 20
+        && data.category in ['convivencia', 'disciplina', 'cumplimiento', 'asistencia', 'reconocimiento']
+        && data.severity in ['positiva', 'leve', 'moderada', 'grave']
+        && data.description is string && data.description.size() >= 1 && data.description.size() <= 2000
+        && data.actionTaken is string && data.actionTaken.size() <= 1000
+        && data.aiReportParents is string && data.aiReportParents.size() <= 6000
+        && data.aiReportDirection is string && data.aiReportDirection.size() <= 6000
+        && data.reportGeneratedAt is string && data.reportGeneratedAt.size() <= 40
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidGradingPeriod(data, classroomId) {
+      return data.keys().hasAll([
+          'ownerId', 'classroomId', 'periodName', 'examTotalQuestions', 'examWeight',
+          'notebookExpectedCount', 'notebookUseAutoCount', 'notebookWeight', 'conductWeight',
+          'scaleMax', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'classroomId', 'periodName', 'examTotalQuestions', 'examWeight',
+          'notebookExpectedCount', 'notebookUseAutoCount', 'notebookWeight', 'conductWeight',
+          'scaleMax', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.classroomId == classroomId
+        && data.periodName is string && data.periodName.size() >= 1 && data.periodName.size() <= 40
+        && data.examTotalQuestions is int && data.examTotalQuestions >= 1 && data.examTotalQuestions <= 500
+        && data.examWeight is number && data.examWeight >= 0 && data.examWeight <= 100
+        && data.notebookExpectedCount is int && data.notebookExpectedCount >= 0 && data.notebookExpectedCount <= 500
+        && data.notebookUseAutoCount is bool
+        && data.notebookWeight is number && data.notebookWeight >= 0 && data.notebookWeight <= 100
+        && data.conductWeight is number && data.conductWeight >= 0 && data.conductWeight <= 100
+        && data.scaleMax in [10, 100]
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStudentGrade(data, classroomId) {
+      return data.keys().hasAll([
+          'ownerId', 'classroomId', 'periodId', 'studentId',
+          'examCorrectAnswers', 'manualExamScore', 'hasManualExamScore',
+          'manualNotebookCount', 'hasManualNotebookCount',
+          'manualNotebookScore', 'hasManualNotebookScore',
+          'aiConductRatio', 'hasAiConductRatio', 'aiConductReason',
+          'manualConductScore', 'hasManualConductScore',
+          'manualFinalGrade', 'hasManualFinalGrade',
+          'customComment', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'classroomId', 'periodId', 'studentId',
+          'examCorrectAnswers', 'manualExamScore', 'hasManualExamScore',
+          'manualNotebookCount', 'hasManualNotebookCount',
+          'manualNotebookScore', 'hasManualNotebookScore',
+          'aiConductRatio', 'hasAiConductRatio', 'aiConductReason',
+          'manualConductScore', 'hasManualConductScore',
+          'manualFinalGrade', 'hasManualFinalGrade',
+          'customComment', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.classroomId == classroomId
+        && isValidId(data.periodId)
+        && isValidId(data.studentId)
+        && data.examCorrectAnswers is number && data.examCorrectAnswers >= 0 && data.examCorrectAnswers <= 500
+        && data.manualExamScore is number && data.manualExamScore >= 0 && data.manualExamScore <= 100
+        && data.hasManualExamScore is bool
+        && data.manualNotebookCount is int && data.manualNotebookCount >= 0 && data.manualNotebookCount <= 500
+        && data.hasManualNotebookCount is bool
+        && data.manualNotebookScore is number && data.manualNotebookScore >= 0 && data.manualNotebookScore <= 100
+        && data.hasManualNotebookScore is bool
+        && data.aiConductRatio is number && data.aiConductRatio >= 0 && data.aiConductRatio <= 1
+        && data.hasAiConductRatio is bool
+        && data.aiConductReason is string && data.aiConductReason.size() <= 1500
+        && data.manualConductScore is number && data.manualConductScore >= 0 && data.manualConductScore <= 100
+        && data.hasManualConductScore is bool
+        && data.manualFinalGrade is number && data.manualFinalGrade >= 0 && data.manualFinalGrade <= 100
+        && data.hasManualFinalGrade is bool
+        && data.customComment is string && data.customComment.size() <= 2000
+        && data.updatedAt is timestamp;
+    }
+
+    // Collection Rules
+    match /classrooms/{classroomId} {
+      allow get: if isSignedIn() && isValidId(classroomId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(classroomId)
+        && isValidClassroom(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isSignedIn() && isValidId(classroomId)
+        && isValidClassroom(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'schoolName', 'teacherName', 'cycle', 'activePeriod', 'updatedAt']);
+      allow delete: if isSignedIn() && isValidId(classroomId) && existing().ownerId == request.auth.uid;
+
+      match /students/{studentId} {
+        allow get: if isSignedIn() && isValidId(classroomId) && isValidId(studentId)
+          && existing().ownerId == request.auth.uid && isClassroomOwner(classroomId);
+        allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(classroomId) && isValidId(studentId)
+          && isValidStudent(incoming(), classroomId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && isClassroomOwner(classroomId);
+        allow update: if isSignedIn() && isValidId(classroomId) && isValidId(studentId)
+          && isValidStudent(incoming(), classroomId)
+          && existing().ownerId == request.auth.uid
+          && incoming().ownerId == existing().ownerId
+          && incoming().classroomId == existing().classroomId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && isClassroomOwner(classroomId)
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'listNumber', 'fullName', 'curp', 'birthDate', 'guardianName',
+            'guardianPhone', 'guardianEmail', 'medicalNotes', 'pedagogicalNotes', 'updatedAt'
+          ]);
+        allow delete: if isSignedIn() && isValidId(classroomId) && isValidId(studentId)
+          && existing().ownerId == request.auth.uid && isClassroomOwner(classroomId);
+      }
+
+      match /studentFiles/{fileId} {
+        allow get: if isSignedIn() && isValidId(classroomId) && isValidId(fileId)
+          && existing().ownerId == request.auth.uid && isClassroomOwner(classroomId);
+        allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(classroomId) && isValidId(fileId)
+          && isValidStudentFile(incoming(), classroomId)
+          && incoming().createdAt == request.time
+          && isClassroomOwner(classroomId);
+        allow update: if false;
+        allow delete: if isSignedIn() && isValidId(classroomId) && isValidId(fileId)
+          && existing().ownerId == request.auth.uid && isClassroomOwner(classroomId);
+      }
+
+      match /attendance/{dateId} {
+        allow get: if isSignedIn() && isValidId(classroomId) && isValidId(dateId)
+          && existing().ownerId == request.auth.uid && isClassroomOwner(classroomId);
+        allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(classroomId) && isValidId(dateId)
+          && isValidAttendanceDay(incoming(), classroomId, dateId)
+          && incoming().updatedAt == request.time
+          && isClassroomOwner(classroomId);
+        allow update: if isSignedIn() && isValidId(classroomId) && isValidId(dateId)
+          && isValidAttendanceDay(incoming(), classroomId, dateId)
+          && existing().ownerId == request.auth.uid
+          && incoming().ownerId == existing().ownerId
+          && incoming().classroomId == existing().classroomId
+          && incoming().date == existing().date
+          && incoming().updatedAt == request.time
+          && isClassroomOwner(classroomId)
+          && incoming().diff(existing()).affectedKeys().hasOnly(['records', 'updatedAt']);
+        allow delete: if isSignedIn() && isValidId(classroomId) && isValidId(dateId)
+          && existing().ownerId == request.auth.uid && isClassroomOwner(classroomId);
+      }
+
+      match /assignments/{assignmentId} {
+        allow get: if isSignedIn() && isValidId(classroomId) && isValidId(assignmentId)
+          && existing().ownerId == request.auth.uid && isClassroomOwner(classroomId);
+        allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(classroomId) && isValidId(assignmentId)
+          && isValidAssignment(incoming(), classroomId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && isClassroomOwner(classroomId);
+        allow update: if isSignedIn() && isValidId(classroomId) && isValidId(assignmentId)
+          && isValidAssignment(incoming(), classroomId)
+          && existing().ownerId == request.auth.uid
+          && incoming().ownerId == existing().ownerId
+          && incoming().classroomId == existing().classroomId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && isClassroomOwner(classroomId)
+          && incoming().diff(existing()).affectedKeys().hasOnly(['period', 'title', 'type', 'dueDate', 'description', 'submissions', 'updatedAt']);
+        allow delete: if isSignedIn() && isValidId(classroomId) && isValidId(assignmentId)
+          && existing().ownerId == request.auth.uid && isClassroomOwner(classroomId);
+      }
+
+      match /incidents/{incidentId} {
+        allow get: if isSignedIn() && isValidId(classroomId) && isValidId(incidentId)
+          && existing().ownerId == request.auth.uid && isClassroomOwner(classroomId);
+        allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(classroomId) && isValidId(incidentId)
+          && isValidIncident(incoming(), classroomId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && isClassroomOwner(classroomId);
+        allow update: if isSignedIn() && isValidId(classroomId) && isValidId(incidentId)
+          && isValidIncident(incoming(), classroomId)
+          && existing().ownerId == request.auth.uid
+          && incoming().ownerId == existing().ownerId
+          && incoming().classroomId == existing().classroomId
+          && incoming().studentId == existing().studentId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && isClassroomOwner(classroomId)
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'date', 'category', 'severity', 'description', 'actionTaken',
+            'aiReportParents', 'aiReportDirection', 'reportGeneratedAt', 'updatedAt'
+          ]);
+        allow delete: if isSignedIn() && isValidId(classroomId) && isValidId(incidentId)
+          && existing().ownerId == request.auth.uid && isClassroomOwner(classroomId);
+      }
+
+      match /gradingPeriods/{periodId} {
+        allow get: if isSignedIn() && isValidId(classroomId) && isValidId(periodId)
+          && existing().ownerId == request.auth.uid && isClassroomOwner(classroomId);
+        allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(classroomId) && isValidId(periodId)
+          && isValidGradingPeriod(incoming(), classroomId)
+          && incoming().updatedAt == request.time
+          && isClassroomOwner(classroomId);
+        allow update: if isSignedIn() && isValidId(classroomId) && isValidId(periodId)
+          && isValidGradingPeriod(incoming(), classroomId)
+          && existing().ownerId == request.auth.uid
+          && incoming().ownerId == existing().ownerId
+          && incoming().classroomId == existing().classroomId
+          && incoming().updatedAt == request.time
+          && isClassroomOwner(classroomId)
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'periodName', 'examTotalQuestions', 'examWeight', 'notebookExpectedCount',
+            'notebookUseAutoCount', 'notebookWeight', 'conductWeight', 'scaleMax', 'updatedAt'
+          ]);
+        allow delete: if isSignedIn() && isValidId(classroomId) && isValidId(periodId)
+          && existing().ownerId == request.auth.uid && isClassroomOwner(classroomId);
+      }
+
+      match /studentGrades/{gradeId} {
+        allow get: if isSignedIn() && isValidId(classroomId) && isValidId(gradeId)
+          && existing().ownerId == request.auth.uid && isClassroomOwner(classroomId);
+        allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(classroomId) && isValidId(gradeId)
+          && isValidStudentGrade(incoming(), classroomId)
+          && incoming().updatedAt == request.time
+          && isClassroomOwner(classroomId);
+        allow update: if isSignedIn() && isValidId(classroomId) && isValidId(gradeId)
+          && isValidStudentGrade(incoming(), classroomId)
+          && existing().ownerId == request.auth.uid
+          && incoming().ownerId == existing().ownerId
+          && incoming().classroomId == existing().classroomId
+          && incoming().periodId == existing().periodId
+          && incoming().studentId == existing().studentId
+          && incoming().updatedAt == request.time
+          && isClassroomOwner(classroomId)
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'examCorrectAnswers', 'manualExamScore', 'hasManualExamScore',
+            'manualNotebookCount', 'hasManualNotebookCount',
+            'manualNotebookScore', 'hasManualNotebookScore',
+            'aiConductRatio', 'hasAiConductRatio', 'aiConductReason',
+            'manualConductScore', 'hasManualConductScore',
+            'manualFinalGrade', 'hasManualFinalGrade',
+            'customComment', 'updatedAt'
+          ]);
+        allow delete: if isSignedIn() && isValidId(classroomId) && isValidId(gradeId)
+          && existing().ownerId == request.auth.uid && isClassroomOwner(classroomId);
+      }
+    }
+  }
+}

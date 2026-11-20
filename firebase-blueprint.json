@@ -1,0 +1,204 @@
+{
+  "entities": {
+    "Classroom": {
+      "title": "Classroom",
+      "description": "A primary school classroom group managed by a teacher.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "schoolName": { "type": "string", "maxLength": 120 },
+        "teacherName": { "type": "string", "maxLength": 100 },
+        "cycle": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "activePeriod": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "name", "schoolName", "teacherName", "cycle", "activePeriod", "createdAt", "updatedAt"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Primary school student belonging to a classroom.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "classroomId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "listNumber": { "type": "integer" },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "curp": { "type": "string", "maxLength": 30 },
+        "birthDate": { "type": "string", "maxLength": 20 },
+        "guardianName": { "type": "string", "maxLength": 120 },
+        "guardianPhone": { "type": "string", "maxLength": 30 },
+        "guardianEmail": { "type": "string", "maxLength": 120 },
+        "medicalNotes": { "type": "string", "maxLength": 1000 },
+        "pedagogicalNotes": { "type": "string", "maxLength": 1500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "classroomId", "listNumber", "fullName", "curp", "birthDate", "guardianName", "guardianPhone", "guardianEmail", "medicalNotes", "pedagogicalNotes", "createdAt", "updatedAt"]
+    },
+    "StudentFile": {
+      "title": "StudentFile",
+      "description": "Digital dossier file or external document reference for a student.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "classroomId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "studentId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "category": { "type": "string", "enum": ["acta", "curp", "boleta", "medica", "evidencia", "otro"] },
+        "fileName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "mimeType": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "sizeBytes": { "type": "integer" },
+        "storageMode": { "type": "string", "enum": ["inline", "link"] },
+        "dataUrl": { "type": "string", "maxLength": 750000 },
+        "externalUrl": { "type": "string", "maxLength": 1000 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "classroomId", "studentId", "title", "category", "fileName", "mimeType", "sizeBytes", "storageMode", "dataUrl", "externalUrl", "notes", "createdAt"]
+    },
+    "AttendanceDay": {
+      "title": "AttendanceDay",
+      "description": "Daily attendance map for a classroom keyed by studentId.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "classroomId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "date": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "records": { "type": "object" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "classroomId", "date", "records", "updatedAt"]
+    },
+    "Assignment": {
+      "title": "Assignment",
+      "description": "Classwork, homework, or notebook check item with per-student revision statuses.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "classroomId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "period": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "type": { "type": "string", "enum": ["cuaderno", "tarea", "trabajo"] },
+        "dueDate": { "type": "string", "maxLength": 20 },
+        "description": { "type": "string", "maxLength": 500 },
+        "submissions": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "classroomId", "period", "title", "type", "dueDate", "description", "submissions", "createdAt", "updatedAt"]
+    },
+    "Incident": {
+      "title": "Incident",
+      "description": "Behavioral incident or recognition log entry with optional AI-drafted reports for parents and school direction.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "classroomId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "studentId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "date": { "type": "string", "minLength": 1, "maxLength": 20 },
+        "category": { "type": "string", "enum": ["convivencia", "disciplina", "cumplimiento", "asistencia", "reconocimiento"] },
+        "severity": { "type": "string", "enum": ["positiva", "leve", "moderada", "grave"] },
+        "description": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "actionTaken": { "type": "string", "maxLength": 1000 },
+        "aiReportParents": { "type": "string", "maxLength": 6000 },
+        "aiReportDirection": { "type": "string", "maxLength": 6000 },
+        "reportGeneratedAt": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "classroomId", "studentId", "date", "category", "severity", "description", "actionTaken", "aiReportParents", "aiReportDirection", "reportGeneratedAt", "createdAt", "updatedAt"]
+    },
+    "GradingPeriod": {
+      "title": "GradingPeriod",
+      "description": "Evaluation rubric weights and thresholds for a grading period.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "classroomId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "periodName": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "examTotalQuestions": { "type": "integer" },
+        "examWeight": { "type": "number" },
+        "notebookExpectedCount": { "type": "integer" },
+        "notebookUseAutoCount": { "type": "boolean" },
+        "notebookWeight": { "type": "number" },
+        "conductWeight": { "type": "number" },
+        "scaleMax": { "type": "integer" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "classroomId", "periodName", "examTotalQuestions", "examWeight", "notebookExpectedCount", "notebookUseAutoCount", "notebookWeight", "conductWeight", "scaleMax", "updatedAt"]
+    },
+    "StudentGrade": {
+      "title": "StudentGrade",
+      "description": "Student evaluation record with exam score, auto-synced notebook count, AI conduct score, manual overrides, and custom comments.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "classroomId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "periodId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "studentId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "examCorrectAnswers": { "type": "number" },
+        "manualExamScore": { "type": "number" },
+        "hasManualExamScore": { "type": "boolean" },
+        "manualNotebookCount": { "type": "integer" },
+        "hasManualNotebookCount": { "type": "boolean" },
+        "manualNotebookScore": { "type": "number" },
+        "hasManualNotebookScore": { "type": "boolean" },
+        "aiConductRatio": { "type": "number" },
+        "hasAiConductRatio": { "type": "boolean" },
+        "aiConductReason": { "type": "string", "maxLength": 1500 },
+        "manualConductScore": { "type": "number" },
+        "hasManualConductScore": { "type": "boolean" },
+        "manualFinalGrade": { "type": "number" },
+        "hasManualFinalGrade": { "type": "boolean" },
+        "customComment": { "type": "string", "maxLength": 2000 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "ownerId", "classroomId", "periodId", "studentId",
+        "examCorrectAnswers", "manualExamScore", "hasManualExamScore",
+        "manualNotebookCount", "hasManualNotebookCount",
+        "manualNotebookScore", "hasManualNotebookScore",
+        "aiConductRatio", "hasAiConductRatio", "aiConductReason",
+        "manualConductScore", "hasManualConductScore",
+        "manualFinalGrade", "hasManualFinalGrade",
+        "customComment", "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/classrooms/{classroomId}": {
+      "schema": { "$ref": "#/entities/Classroom" },
+      "description": "Classrooms owned by authenticated teachers."
+    },
+    "/classrooms/{classroomId}/students/{studentId}": {
+      "schema": { "$ref": "#/entities/Student" },
+      "description": "Students enrolled in the classroom."
+    },
+    "/classrooms/{classroomId}/studentFiles/{fileId}": {
+      "schema": { "$ref": "#/entities/StudentFile" },
+      "description": "Digital dossier files uploaded for each student."
+    },
+    "/classrooms/{classroomId}/attendance/{dateId}": {
+      "schema": { "$ref": "#/entities/AttendanceDay" },
+      "description": "Daily attendance map per classroom."
+    },
+    "/classrooms/{classroomId}/assignments/{assignmentId}": {
+      "schema": { "$ref": "#/entities/Assignment" },
+      "description": "Classwork, homework, and notebook revision checks."
+    },
+    "/classrooms/{classroomId}/incidents/{incidentId}": {
+      "schema": { "$ref": "#/entities/Incident" },
+      "description": "Behavioral incident log and AI reports."
+    },
+    "/classrooms/{classroomId}/gradingPeriods/{periodId}": {
+      "schema": { "$ref": "#/entities/GradingPeriod" },
+      "description": "Evaluation rubric settings per period."
+    },
+    "/classrooms/{classroomId}/studentGrades/{gradeId}": {
+      "schema": { "$ref": "#/entities/StudentGrade" },
+      "description": "Per-student grades, manual overrides, and report comments."
+    }
+  }
+}

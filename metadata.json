@@ -1,0 +1,6 @@
+{
+  "name": "Libreta Escolar",
+  "description": "Plataforma integral para docentes de primaria: pase de lista, expediente digital, registro de trabajos y cuadernos, bitácora de incidencias con reportes de conducta asistidos por IA y automatización de calificaciones imprimibles.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
