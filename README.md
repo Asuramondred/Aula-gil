@@ -46,19 +46,28 @@ npm run electron:build
 Al terminar encontrarás en `release/`:
 - `AulaÁgil Setup 1.0.0.exe` (instalador estándar de Windows con acceso directo).
 - `AulaÁgil 1.0.0.exe` (versión portable sin instalación).
+- `latest.yml` (metadatos de actualización para GitHub Releases; en macOS con `npm run electron:build:mac` se genera `latest-mac.yml` y `.dmg`).
+
+### Actualizaciones automáticas con GitHub Releases
+1. Abre **`electron-builder.yml`** y cambia `TU_USUARIO_GITHUB` y `NOMBRE_DEL_REPO` por los datos de tu repositorio en GitHub.
+2. Cuando publiques una nueva versión, sube el campo `"version"` en `package.json` (por ejemplo de `1.0.0` a `1.1.0`), compila con `npm run electron:build` y sube a tu **GitHub Release** los archivos de `release/` (incluyendo `latest.yml` / `latest-mac.yml`).
+3. Los docentes con la app instalada podrán buscar e instalar la nueva versión desde **Configuración → Actualizaciones del Sistema** sin perder sus datos locales (`userData`).
 
 ---
 
 ## ¿Dónde se guardan los datos?
 
-Toda la información se almacena de manera local y privada en tu computadora en formato JSON estructurado:
+Toda la información se almacena de manera local y privada en tu computadora en formato JSON y SQLite local:
 
-- **En Windows instalado (`.exe`):** `%APPDATA%\AulaÁgil\libreta-db.json`
-- **En modo desarrollo (`npm run dev`):** `./data/libreta-db.json`
+- **En Windows instalado (`.exe`):** `%APPDATA%\AulaÁgil\libreta-db.json` y `aula-agil.sqlite`
+- **En modo desarrollo (`npm run dev`):** `./data/libreta-db.json` y `./data/aula-agil.sqlite`
+
+Al abrir la aplicación por primera vez se configura un **perfil docente local** protegido con contraseña (cifrada con `scrypt` + salt en SQLite), **Llave Maestra de recuperación** descargable en `.txt` y **2 preguntas de seguridad**, además de un botón para **bloquear la pantalla** en el salón de clases sin internet.
 
 Desde la pestaña **Configuración** dentro de la app puedes:
-- **Exportar respaldo completo (`.json`)** para guardar una copia en USB o nube personal.
-- **Importar respaldo (`.json`)** para restaurar todos tus grupos y ciclos en otra PC.
+- Editar tu perfil, foto, usuario o contraseña local.
+- **Respaldo en Google Drive (Opcional):** Vincular tu cuenta de Google con permiso restringido (`drive.file`, acceso exclusivo a la carpeta `AulaÁgil - Respaldos`), subir paquetes completos `.zip` (base SQLite `aula-agil.sqlite`, libreta JSON y archivos adjuntos), programar copias automáticas (*Al cerrar*, *Cada 24 horas* o *Semanal*), configurar cuántas copias conservar y restaurar en un clic. En compilaciones de escritorio `.exe` también puedes ingresar opcionalmente tu propio `Client ID` y `Client Secret` OAuth2 para flujo loopback persistente.
+- **Respaldos locales manuales:** Descargar respaldo completo (`.zip` o `.json`) para guardar una copia en USB y restaurarlo en otra computadora.
 
 ---
 

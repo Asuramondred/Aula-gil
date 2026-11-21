@@ -1,0 +1,40 @@
+appId: com.aulaagil.app
+productName: AulaÁgil
+directories:
+  output: release
+files:
+  - dist/**/*
+  - dist-server/**/*
+  - electron/**/*
+  - electron-builder.yml
+  - package.json
+  - "!**/*.map"
+  - "!data/**"
+publish:
+  - provider: github
+    owner: "TU_USUARIO_GITHUB"
+    repo: "NOMBRE_DEL_REPO"
+    releaseType: release
+win:
+  signAndEditExecutable: false
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+mac:
+  category: public.app-category.education
+  identity: null
+  target:
+    - target: dmg
+      arch:
+        - universal
+    - target: zip
+      arch:
+        - universal

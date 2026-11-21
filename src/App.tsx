@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowDownToLine,
   BookMarked,
   BookOpenCheck,
   Calculator,
@@ -10,14 +11,28 @@ import {
   GraduationCap,
   Home,
   LayoutDashboard,
+  Lock,
   Menu,
   NotebookPen,
   Settings,
   Sparkles,
   X,
 } from 'lucide-react';
-import { localApi, toValidPeriodId } from './lib/api';
+import {
+  localApi,
+  setAuthToken,
+  setUnauthorizedHandler,
+  toValidPeriodId,
+} from './lib/api';
+import {
+  clearCachedDriveAccessToken,
+  getCachedDriveAccessToken,
+  initDriveAuthListener,
+  signOutGoogleDrive,
+} from './lib/googleDriveAuth';
+import { useAppUpdater } from './lib/useAppUpdater';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { LoginView } from './components/LoginView';
 import { HomeView } from './components/HomeView';
 import { OverviewView } from './components/OverviewView';
 import { RosterAttendanceView } from './components/RosterAttendanceView';
@@ -30,8 +45,10 @@ import { GradingView } from './components/GradingView';
 import { SettingsView } from './components/SettingsView';
 import type {
   AppSection,
+  AuthStatusResponse,
   GradingPeriod,
   LocalDatabase,
+  UserProfile,
 } from './types';
 
 interface NavItem {
@@ -71,6 +88,12 @@ const NAV_GROUPS: Array<{ title?: string; items: NavItem[] }> = [
 const ALL_NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
 
 function ClassroomWorkspace() {
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState('');
+  const [authStatus, setAuthStatus] = useState<AuthStatusResponse | null>(null);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+
   const [db, setDb] = useState<LocalDatabase | null>(null);
   const [loadError, setLoadError] = useState('');
   const [activeClassroomId, setActiveClassroomId] = useState<string>('');
@@ -78,6 +101,17 @@ function ClassroomWorkspace() {
   const [selectedDossierStudentId, setSelectedDossierStudentId] = useState<string>('');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
+  const [lockingScreen, setLockingScreen] = useState(false);
+  const autoDriveBackupRunningRef = useRef(false);
+
+  const {
+    updater,
+    hasUpdateAttention,
+    checkForUpdates,
+    downloadUpdate,
+    quitAndInstall,
+    openDirectDownload,
+  } = useAppUpdater(authenticated);
 
   // First-launch onboarding state when 0 classrooms exist locally
   const [onboardingName, setOnboardingName] = useState('4° A');
@@ -85,6 +119,30 @@ function ClassroomWorkspace() {
   const [onboardingTeacher, setOnboardingTeacher] = useState('Docente Titular');
   const [onboardingCycle, setOnboardingCycle] = useState('2026-2027');
   const [onboardingBusy, setOnboardingBusy] = useState(false);
+
+  const checkAuthStatus = async () => {
+    setAuthLoading(true);
+    setAuthError('');
+    try {
+      const status = await localApi.getAuthStatus();
+      setAuthStatus(status);
+      setAuthenticated(Boolean(status.hasUser && status.authenticated));
+      setCurrentUser(status.profile);
+      if (status.profile?.displayName) {
+        setOnboardingTeacher((prev) =>
+          prev === 'Docente Titular' ? status.profile!.displayName : prev
+        );
+      }
+    } catch (err) {
+      setAuthError(
+        err instanceof Error
+          ? err.message
+          : 'No se pudo verificar el estado de acceso local.'
+      );
+    } finally {
+      setAuthLoading(false);
+    }
+  };
 
   const loadLocalDb = async () => {
     setLoadError('');
@@ -105,12 +163,82 @@ function ClassroomWorkspace() {
   };
 
   useEffect(() => {
+    checkAuthStatus();
+    setUnauthorizedHandler(() => {
+      clearCachedDriveAccessToken();
+      setAuthenticated(false);
+      setDb(null);
+      checkAuthStatus();
+    });
+    const unsubDriveAuth = initDriveAuthListener();
+    return () => {
+      setUnauthorizedHandler(null);
+      unsubDriveAuth();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!authenticated) return;
     loadLocalDb();
     localApi
       .getKeyStatus()
       .then((s) => setLastBackupAt(s.lastBackupAt))
       .catch(() => {});
-  }, []);
+  }, [authenticated]);
+
+  // Background scheduler for daily (24h) and weekly (7d) Google Drive backups when online
+  useEffect(() => {
+    if (!authenticated) return;
+    let cancelled = false;
+
+    const maybeRunScheduledDriveBackup = async () => {
+      if (cancelled || autoDriveBackupRunningRef.current) return;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+
+      autoDriveBackupRunningRef.current = true;
+      try {
+        const status = await localApi.getDriveBackupStatus();
+        if (!status.connected) return;
+        if (status.autoSchedule !== 'daily' && status.autoSchedule !== 'weekly') {
+          return;
+        }
+        const canUploadNow =
+          status.authMode === 'desktop_oauth' || Boolean(getCachedDriveAccessToken());
+        if (!canUploadNow) return;
+
+        const intervalMs =
+          status.autoSchedule === 'weekly'
+            ? 7 * 24 * 60 * 60 * 1000
+            : 24 * 60 * 60 * 1000;
+        const lastMs = status.lastBackupAt
+          ? new Date(status.lastBackupAt).getTime()
+          : 0;
+        if (lastMs && Date.now() - lastMs < intervalMs) return;
+
+        const res = await localApi.backupNowToDrive();
+        if (!cancelled && res.status.lastBackupAt) {
+          setLastBackupAt(res.status.lastBackupAt);
+        }
+      } catch {
+        // Silent in classroom/offline environments
+      } finally {
+        autoDriveBackupRunningRef.current = false;
+      }
+    };
+
+    const initialTimer = setTimeout(() => {
+      void maybeRunScheduledDriveBackup();
+    }, 8000);
+    const interval = setInterval(() => {
+      void maybeRunScheduledDriveBackup();
+    }, 15 * 60 * 1000);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(initialTimer);
+      clearInterval(interval);
+    };
+  }, [authenticated]);
 
   // Keep activeClassroomId valid if classrooms change (e.g. import/delete)
   useEffect(() => {
@@ -123,6 +251,88 @@ function ClassroomWorkspace() {
     }
     setActiveClassroomId(db.classrooms[0]?.id || '');
   }, [db, activeClassroomId]);
+
+  const handleAuthenticated = (user: UserProfile) => {
+    setCurrentUser(user);
+    setAuthStatus({ hasUser: true, authenticated: true, profile: user });
+    setAuthenticated(true);
+    if (user.displayName) {
+      setOnboardingTeacher(user.displayName);
+    }
+  };
+
+  const handleLockScreen = async () => {
+    setLockingScreen(true);
+    try {
+      await localApi.logout();
+    } catch {
+      // Ignore network errors when locking locally
+    } finally {
+      clearCachedDriveAccessToken();
+      setAuthToken(null);
+      setAuthenticated(false);
+      setDb(null);
+      setMobileNavOpen(false);
+      setLockingScreen(false);
+      await checkAuthStatus();
+    }
+  };
+
+  const handleFactoryResetDone = async () => {
+    await signOutGoogleDrive();
+    setAuthToken(null);
+    setAuthenticated(false);
+    setCurrentUser(null);
+    setDb(null);
+    setActiveClassroomId('');
+    setSection('inicio');
+    await checkAuthStatus();
+  };
+
+  if (authLoading && !authStatus) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="text-center space-y-2">
+          <GraduationCap className="w-8 h-8 text-blue-700 mx-auto" />
+          <p className="text-sm text-slate-600">Verificando acceso local...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (authError && !authStatus) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="max-w-md w-full bg-white border border-slate-200 rounded-xl p-6 text-center space-y-4">
+          <GraduationCap className="w-8 h-8 text-blue-700 mx-auto" />
+          <div className="space-y-1">
+            <h1 className="font-display text-lg font-bold text-slate-900">
+              Error al iniciar AulaÁgil
+            </h1>
+            <p className="text-sm text-red-700">{authError}</p>
+          </div>
+          <button
+            type="button"
+            onClick={checkAuthStatus}
+            className="px-4 py-2 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg"
+          >
+            Reintentar conexión local
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!authStatus?.hasUser || !authenticated) {
+    return (
+      <LoginView
+        hasUser={Boolean(authStatus?.hasUser)}
+        existingProfile={authStatus?.profile || currentUser}
+        onAuthenticated={handleAuthenticated}
+        onFactoryResetDone={handleFactoryResetDone}
+      />
+    );
+  }
 
   if (loadError) {
     return (
@@ -194,16 +404,27 @@ function ClassroomWorkspace() {
 
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col">
-        <header className="border-b border-slate-200 bg-white px-6 py-4 flex items-center justify-between">
+        <header className="border-b border-slate-200 bg-white px-6 py-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-2.5">
             <GraduationCap className="w-6 h-6 text-blue-700" />
             <span className="font-display text-lg font-bold text-slate-900">
               AulaÁgil
             </span>
           </div>
-          <span className="text-xs font-medium text-slate-500">
-            Almacenamiento 100% local
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="hidden sm:inline text-xs font-medium text-slate-500">
+              Almacenamiento 100% local
+            </span>
+            <button
+              type="button"
+              onClick={handleLockScreen}
+              disabled={lockingScreen}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg whitespace-nowrap"
+            >
+              <Lock className="w-3.5 h-3.5" />
+              Bloquear
+            </button>
+          </div>
         </header>
 
         <main className="flex-1 flex items-center justify-center p-6">
@@ -401,7 +622,18 @@ function ClassroomWorkspace() {
                         active ? 'text-blue-700' : 'text-slate-400'
                       }`}
                     />
-                    <span>{item.label}</span>
+                    <span className="flex-1 text-left">{item.label}</span>
+                    {item.id === 'configuracion' && hasUpdateAttention && (
+                      <span
+                        title={`Nueva versión v${updater.availableVersion || ''}`}
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono font-semibold text-blue-800 bg-blue-100 border border-blue-200 rounded"
+                      >
+                        <ArrowDownToLine className="w-3 h-3" />
+                        {updater.status === 'downloaded'
+                          ? 'Lista'
+                          : `v${updater.availableVersion || 'Nueva'}`}
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -409,13 +641,41 @@ function ClassroomWorkspace() {
           ))}
         </nav>
 
-        <div className="p-4 border-t border-slate-200 space-y-1.5">
-          <p className="text-xs font-semibold text-slate-900 truncate">
-            {activeClassroom.teacherName || 'Docente Titular'}
-          </p>
-          <p className="text-[11px] text-slate-500 truncate">
-            Modo local · {activeClassroom.activePeriod}
-          </p>
+        <div className="p-4 border-t border-slate-200 space-y-2.5">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-lg border border-slate-200 bg-slate-100 overflow-hidden flex items-center justify-center shrink-0">
+              {currentUser?.avatarDataUrl ? (
+                <img
+                  src={currentUser.avatarDataUrl}
+                  alt={currentUser.displayName || currentUser.username}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <span className="font-display text-xs font-bold text-blue-700">
+                  {(
+                    currentUser?.displayName ||
+                    currentUser?.username ||
+                    activeClassroom.teacherName ||
+                    'AA'
+                  )
+                    .trim()
+                    .slice(0, 2)
+                    .toUpperCase()}
+                </span>
+              )}
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-slate-900 truncate">
+                {currentUser?.displayName ||
+                  activeClassroom.teacherName ||
+                  'Docente Titular'}
+              </p>
+              <p className="text-[11px] text-slate-500 truncate">
+                @{currentUser?.username || 'local'} · {activeClassroom.activePeriod}
+              </p>
+            </div>
+          </div>
+
           {(() => {
             const daysSince = lastBackupAt
               ? Math.floor((Date.now() - Date.parse(lastBackupAt)) / 86400000)
@@ -439,6 +699,16 @@ function ClassroomWorkspace() {
               </button>
             );
           })()}
+
+          <button
+            type="button"
+            onClick={handleLockScreen}
+            disabled={lockingScreen}
+            className="w-full inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-60 rounded-lg transition-colors whitespace-nowrap"
+          >
+            <Lock className="w-3.5 h-3.5" />
+            Cerrar sesión / Bloquear
+          </button>
         </div>
       </aside>
 
@@ -499,13 +769,32 @@ function ClassroomWorkspace() {
                         }`}
                       >
                         <Icon className="w-4 h-4 shrink-0" />
-                        <span>{item.label}</span>
+                        <span className="flex-1 text-left">{item.label}</span>
+                        {item.id === 'configuracion' && hasUpdateAttention && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono font-semibold text-blue-800 bg-blue-100 border border-blue-200 rounded">
+                            <ArrowDownToLine className="w-3 h-3" />
+                            {updater.status === 'downloaded'
+                              ? 'Lista'
+                              : `v${updater.availableVersion || 'Nueva'}`}
+                          </span>
+                        )}
                       </button>
                     );
                   })}
                 </div>
               ))}
             </nav>
+            <div className="p-3 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={handleLockScreen}
+                disabled={lockingScreen}
+                className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg whitespace-nowrap"
+              >
+                <Lock className="w-3.5 h-3.5" />
+                Cerrar sesión / Bloquear
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -544,9 +833,20 @@ function ClassroomWorkspace() {
                 Inicio
               </button>
             )}
-            <span className="hidden sm:inline text-xs text-slate-500 whitespace-nowrap">
+            <span className="hidden md:inline text-xs text-slate-500 whitespace-nowrap">
               {activeClassroom.schoolName || 'Primaria'}
             </span>
+            <button
+              type="button"
+              onClick={handleLockScreen}
+              disabled={lockingScreen}
+              title="Bloquear pantalla y cerrar sesión"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-60 rounded-lg transition-colors whitespace-nowrap"
+            >
+              <Lock className="w-3.5 h-3.5 text-slate-600" />
+              <span className="hidden sm:inline">Cerrar sesión / Bloquear</span>
+              <span className="sm:hidden">Bloquear</span>
+            </button>
           </div>
         </header>
 
@@ -658,6 +958,18 @@ function ClassroomWorkspace() {
             <SettingsView
               classrooms={db.classrooms}
               activeClassroom={activeClassroom}
+              currentUser={currentUser}
+              updater={updater}
+              onCheckUpdates={checkForUpdates}
+              onDownloadUpdate={downloadUpdate}
+              onQuitAndInstall={quitAndInstall}
+              onOpenDirectDownload={openDirectDownload}
+              onProfileUpdate={(user) => {
+                setCurrentUser(user);
+                setAuthStatus((prev) =>
+                  prev ? { ...prev, profile: user } : prev
+                );
+              }}
               onSelectClassroom={setActiveClassroomId}
               onDbUpdate={setDb}
               onBackupRecorded={setLastBackupAt}

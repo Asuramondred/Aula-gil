@@ -1,9 +1,52 @@
 import 'dotenv/config';
-import express, { type Request, type Response } from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, Type } from '@google/genai';
+import {
+  clearUsersTable,
+  countUsers,
+  createUser,
+  getDriveConfig,
+  getFirstUser,
+  getUserById,
+  getUserByUsername,
+  initSqliteDb,
+  saveDriveConfig,
+  toPublicProfile,
+  updateUserPassword,
+  updateUserProfile,
+} from './server/db.ts';
+import {
+  buildBackupZipBuffer,
+  deleteDriveBackup,
+  disconnectDriveAccount,
+  getDrivePublicStatus,
+  listDriveBackups,
+  previewDriveBackup,
+  restoreBackupZipBuffer,
+  restoreDriveBackup,
+  startDesktopOAuthFlow,
+  syncFirebaseDriveProfile,
+  uploadBackupToDrive,
+} from './server/googleDriveBackup.ts';
+import {
+  clearFailedAttempts,
+  checkRateLimit,
+  createSession,
+  extractBearerToken,
+  generateRecoveryKey,
+  getSessionFromHeader,
+  hashSecret,
+  normalizeRecoveryKey,
+  normalizeSecurityAnswer,
+  recordFailedAttempt,
+  revokeAllSessions,
+  revokeSession,
+  sanitizeAvatarDataUrl,
+  verifySecret,
+} from './server/auth.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -828,12 +871,374 @@ async function generateStructuredJson(
   };
 }
 
+interface AuthenticatedRequest extends Request {
+  authUserId?: string;
+}
+
+function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  const session = getSessionFromHeader(req.headers.authorization);
+  if (!session) {
+    res.status(401).json({ error: 'Sesión bloqueada o expirada. Inicia sesión nuevamente.' });
+    return;
+  }
+  const user = getUserById(session.userId);
+  if (!user) {
+    revokeSession(session.token);
+    res.status(401).json({ error: 'Perfil no encontrado. Inicia sesión nuevamente.' });
+    return;
+  }
+  req.authUserId = user.id;
+  next();
+}
+
 export async function startServer(customPort = PORT) {
+  await initSqliteDb(getDataDir());
+
   const app = express();
   app.use(express.json({ limit: '15mb' }));
 
   app.get('/api/health', (_req: Request, res: Response) => {
-    res.json({ ok: true, dataDir: getDataDir() });
+    res.json({ ok: true });
+  });
+
+  // --- Public Auth, Onboarding & Offline Recovery Routes ---
+  app.get('/api/auth/status', (req: Request, res: Response) => {
+    const total = countUsers();
+    if (total === 0) {
+      res.json({ hasUser: false, authenticated: false, profile: null });
+      return;
+    }
+    const session = getSessionFromHeader(req.headers.authorization);
+    if (session) {
+      const user = getUserById(session.userId);
+      if (user) {
+        res.json({
+          hasUser: true,
+          authenticated: true,
+          profile: toPublicProfile(user),
+        });
+        return;
+      }
+    }
+    const primary = getFirstUser();
+    res.json({
+      hasUser: true,
+      authenticated: false,
+      profile: primary ? toPublicProfile(primary) : null,
+    });
+  });
+
+  app.get('/api/auth/recovery-preview', (_req: Request, res: Response) => {
+    if (countUsers() > 0) {
+      res.status(409).json({ error: 'Ya existe un perfil configurado.' });
+      return;
+    }
+    res.json({ recoveryKey: generateRecoveryKey() });
+  });
+
+  app.post('/api/auth/register', (req: Request, res: Response) => {
+    if (countUsers() > 0) {
+      res.status(409).json({
+        error: 'Ya existe una cuenta registrada en esta computadora.',
+      });
+      return;
+    }
+    const {
+      username,
+      displayName,
+      password,
+      avatarDataUrl,
+      recoveryKey,
+      securityQ1,
+      securityA1,
+      securityQ2,
+      securityA2,
+    } = req.body ?? {};
+
+    const cleanUsername = String(username || '').trim();
+    const cleanDisplayName = String(displayName || '').trim() || cleanUsername;
+    const rawPassword = String(password || '');
+    const cleanQ1 = String(securityQ1 || '').trim();
+    const cleanA1 = normalizeSecurityAnswer(String(securityA1 || ''));
+    const cleanQ2 = String(securityQ2 || '').trim();
+    const cleanA2 = normalizeSecurityAnswer(String(securityA2 || ''));
+    const cleanRecoveryKey = normalizeRecoveryKey(
+      String(recoveryKey || generateRecoveryKey())
+    );
+
+    if (cleanUsername.length < 3 || cleanUsername.length > 40) {
+      res.status(400).json({ error: 'El usuario debe tener entre 3 y 40 caracteres.' });
+      return;
+    }
+    if (rawPassword.length < 6) {
+      res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres.' });
+      return;
+    }
+    if (!cleanQ1 || cleanA1.length < 2 || !cleanQ2 || cleanA2.length < 2) {
+      res.status(400).json({
+        error: 'Completa las 2 preguntas de seguridad y sus respuestas (mínimo 2 caracteres).',
+      });
+      return;
+    }
+    if (cleanRecoveryKey.length < 10) {
+      res.status(400).json({ error: 'Llave maestra de recuperación inválida.' });
+      return;
+    }
+
+    const user = createUser({
+      id: makeId('usr'),
+      username: cleanUsername,
+      displayName: cleanDisplayName.slice(0, 80),
+      avatarDataUrl: sanitizeAvatarDataUrl(avatarDataUrl),
+      passwordHash: hashSecret(rawPassword),
+      recoveryKeyHash: hashSecret(cleanRecoveryKey),
+      securityQ1: cleanQ1.slice(0, 160),
+      securityA1Hash: hashSecret(cleanA1),
+      securityQ2: cleanQ2.slice(0, 160),
+      securityA2Hash: hashSecret(cleanA2),
+    });
+
+    const session = createSession(user.id, user.username);
+    res.json({
+      token: session.token,
+      user: toPublicProfile(user),
+    });
+  });
+
+  app.post('/api/auth/login', (req: Request, res: Response) => {
+    const gate = checkRateLimit('login');
+    if (!gate.allowed) {
+      res.status(429).json({
+        error: `Demasiados intentos fallidos. Espera ${gate.waitSeconds} segundos antes de intentar de nuevo.`,
+      });
+      return;
+    }
+
+    const { username, password } = req.body ?? {};
+    const cleanUsername = String(username || '').trim();
+    const rawPassword = String(password || '');
+
+    if (!cleanUsername || !rawPassword) {
+      res.status(400).json({ error: 'Ingresa tu usuario y contraseña.' });
+      return;
+    }
+
+    const user = getUserByUsername(cleanUsername);
+    if (!user || !verifySecret(rawPassword, user.password_hash)) {
+      recordFailedAttempt('login');
+      res.status(401).json({ error: 'Usuario o contraseña incorrectos.' });
+      return;
+    }
+
+    clearFailedAttempts('login');
+    const session = createSession(user.id, user.username);
+    res.json({
+      token: session.token,
+      user: toPublicProfile(user),
+    });
+  });
+
+  app.post('/api/auth/logout', (req: Request, res: Response) => {
+    const token = extractBearerToken(req.headers.authorization);
+    revokeSession(token);
+    res.json({ ok: true });
+  });
+
+  app.get('/api/auth/recovery-questions', (req: Request, res: Response) => {
+    const requestedUser = String(req.query.username || '').trim();
+    const user = requestedUser ? getUserByUsername(requestedUser) : getFirstUser();
+    if (!user) {
+      res.status(404).json({ error: 'No se encontró un perfil registrado.' });
+      return;
+    }
+    res.json({
+      username: user.username,
+      securityQ1: user.security_q1,
+      securityQ2: user.security_q2,
+    });
+  });
+
+  app.post('/api/auth/recover/key', (req: Request, res: Response) => {
+    const gate = checkRateLimit('recover_key');
+    if (!gate.allowed) {
+      res.status(429).json({
+        error: `Demasiados intentos fallidos. Espera ${gate.waitSeconds} segundos.`,
+      });
+      return;
+    }
+
+    const { username, recoveryKey, newPassword } = req.body ?? {};
+    const cleanUsername = String(username || '').trim();
+    const cleanKey = normalizeRecoveryKey(String(recoveryKey || ''));
+    const nextPassword = String(newPassword || '');
+
+    if (nextPassword.length < 6) {
+      res.status(400).json({
+        error: 'La nueva contraseña debe tener al menos 6 caracteres.',
+      });
+      return;
+    }
+
+    const user = cleanUsername ? getUserByUsername(cleanUsername) : getFirstUser();
+    if (!user || !verifySecret(cleanKey, user.recovery_key_hash)) {
+      recordFailedAttempt('recover_key');
+      res.status(401).json({
+        error: 'La Llave Maestra de Recuperación no coincide.',
+      });
+      return;
+    }
+
+    clearFailedAttempts('recover_key');
+    const newRecoveryKey = generateRecoveryKey();
+    const updated = updateUserPassword(
+      user.id,
+      hashSecret(nextPassword),
+      hashSecret(normalizeRecoveryKey(newRecoveryKey))
+    );
+    if (!updated) {
+      res.status(500).json({ error: 'No se pudo actualizar la contraseña.' });
+      return;
+    }
+
+    revokeAllSessions();
+    const session = createSession(updated.id, updated.username);
+    res.json({
+      ok: true,
+      newRecoveryKey,
+      token: session.token,
+      user: toPublicProfile(updated),
+    });
+  });
+
+  app.post('/api/auth/recover/questions', (req: Request, res: Response) => {
+    const gate = checkRateLimit('recover_questions');
+    if (!gate.allowed) {
+      res.status(429).json({
+        error: `Demasiados intentos fallidos. Espera ${gate.waitSeconds} segundos.`,
+      });
+      return;
+    }
+
+    const { username, answer1, answer2, newPassword } = req.body ?? {};
+    const cleanUsername = String(username || '').trim();
+    const normA1 = normalizeSecurityAnswer(String(answer1 || ''));
+    const normA2 = normalizeSecurityAnswer(String(answer2 || ''));
+    const nextPassword = String(newPassword || '');
+
+    if (nextPassword.length < 6) {
+      res.status(400).json({
+        error: 'La nueva contraseña debe tener al menos 6 caracteres.',
+      });
+      return;
+    }
+
+    const user = cleanUsername ? getUserByUsername(cleanUsername) : getFirstUser();
+    const validA1 = user ? verifySecret(normA1, user.security_a1_hash) : false;
+    const validA2 = user ? verifySecret(normA2, user.security_a2_hash) : false;
+
+    if (!user || !validA1 || !validA2) {
+      recordFailedAttempt('recover_questions');
+      res.status(401).json({
+        error: 'Alguna de las respuestas de seguridad es incorrecta.',
+      });
+      return;
+    }
+
+    clearFailedAttempts('recover_questions');
+    const updated = updateUserPassword(user.id, hashSecret(nextPassword));
+    if (!updated) {
+      res.status(500).json({ error: 'No se pudo actualizar la contraseña.' });
+      return;
+    }
+
+    revokeAllSessions();
+    const session = createSession(updated.id, updated.username);
+    res.json({
+      ok: true,
+      token: session.token,
+      user: toPublicProfile(updated),
+    });
+  });
+
+  app.post('/api/auth/factory-reset', (req: Request, res: Response) => {
+    const { confirmation, doubleConfirmed } = req.body ?? {};
+    if (
+      doubleConfirmed !== true ||
+      String(confirmation || '').trim().toUpperCase() !== 'RESTABLECER'
+    ) {
+      res.status(400).json({
+        error: 'Debes confirmar escribiendo RESTABLECER para restablecer la aplicación.',
+      });
+      return;
+    }
+
+    revokeAllSessions();
+    clearUsersTable();
+    writeDb(emptyDb());
+    const keysPath = getKeysFilePath();
+    if (fs.existsSync(keysPath)) {
+      fs.unlinkSync(keysPath);
+    }
+    clearFailedAttempts('login');
+    clearFailedAttempts('recover_key');
+    clearFailedAttempts('recover_questions');
+    res.json({ ok: true });
+  });
+
+  // Protect all workspace, settings, backup, profile & AI routes
+  app.use('/api', requireAuth);
+
+  app.patch('/api/auth/profile', (req: AuthenticatedRequest, res: Response) => {
+    const userId = req.authUserId;
+    if (!userId) {
+      res.status(401).json({ error: 'No autorizado.' });
+      return;
+    }
+    const { username, displayName, avatarDataUrl } = req.body ?? {};
+    const cleanUsername =
+      typeof username === 'string' ? username.trim() : undefined;
+    if (cleanUsername !== undefined && (cleanUsername.length < 3 || cleanUsername.length > 40)) {
+      res.status(400).json({ error: 'El usuario debe tener entre 3 y 40 caracteres.' });
+      return;
+    }
+    const sanitizedAvatar =
+      avatarDataUrl === undefined ? undefined : sanitizeAvatarDataUrl(avatarDataUrl);
+
+    const updated = updateUserProfile(userId, {
+      username: cleanUsername,
+      displayName: typeof displayName === 'string' ? displayName.trim().slice(0, 80) : undefined,
+      avatarDataUrl: sanitizedAvatar,
+    });
+    if (!updated) {
+      res.status(404).json({ error: 'Usuario no encontrado.' });
+      return;
+    }
+    res.json({ user: toPublicProfile(updated) });
+  });
+
+  app.post('/api/auth/change-password', (req: AuthenticatedRequest, res: Response) => {
+    const userId = req.authUserId;
+    if (!userId) {
+      res.status(401).json({ error: 'No autorizado.' });
+      return;
+    }
+    const { currentPassword, newPassword } = req.body ?? {};
+    const user = getUserById(userId);
+    if (!user || !verifySecret(String(currentPassword || ''), user.password_hash)) {
+      res.status(401).json({ error: 'La contraseña actual no es correcta.' });
+      return;
+    }
+    const nextPassword = String(newPassword || '');
+    if (nextPassword.length < 6) {
+      res.status(400).json({ error: 'La nueva contraseña debe tener al menos 6 caracteres.' });
+      return;
+    }
+    const updated = updateUserPassword(user.id, hashSecret(nextPassword));
+    if (!updated) {
+      res.status(500).json({ error: 'No se pudo actualizar la contraseña.' });
+      return;
+    }
+    res.json({ ok: true, user: toPublicProfile(updated) });
   });
 
   // --- Data & Backup REST API ---
@@ -2340,6 +2745,394 @@ export async function startServer(customPort = PORT) {
     }
   });
 
+  app.get('/api/updates/check-github', async (_req: Request, res: Response) => {
+    try {
+      const pkgFile = path.resolve(__dirname, 'package.json');
+      const altPkgFile = path.resolve(__dirname, '..', 'package.json');
+      const resolvedPkg = fs.existsSync(pkgFile) ? pkgFile : altPkgFile;
+      const currentVersion = fs.existsSync(resolvedPkg)
+        ? String(JSON.parse(fs.readFileSync(resolvedPkg, 'utf-8')).version || '1.0.0')
+        : '1.0.0';
+
+      const ymlCandidates = [
+        path.resolve(__dirname, 'electron-builder.yml'),
+        path.resolve(__dirname, '..', 'electron-builder.yml'),
+      ];
+      let owner = 'TU_USUARIO_GITHUB';
+      let repo = 'NOMBRE_DEL_REPO';
+      for (const cand of ymlCandidates) {
+        if (!fs.existsSync(cand)) continue;
+        const yml = fs.readFileSync(cand, 'utf-8');
+        const ownerM = yml.match(/^\s*(?:-\s*)?owner:\s*["']?([^"'\r\n#]+)["']?/m);
+        const repoM = yml.match(/^\s*(?:-\s*)?repo:\s*["']?([^"'\r\n#]+)["']?/m);
+        if (ownerM?.[1]) owner = ownerM[1].trim();
+        if (repoM?.[1]) repo = repoM[1].trim();
+        break;
+      }
+
+      const repoSlug = `${owner}/${repo}`;
+      const isPlaceholder =
+        !owner ||
+        !repo ||
+        owner === 'TU_USUARIO_GITHUB' ||
+        repo === 'NOMBRE_DEL_REPO';
+
+      if (isPlaceholder) {
+        res.json({
+          currentVersion,
+          status: 'unconfigured',
+          repoSlug,
+          availableVersion: null,
+          releaseNotes: '',
+          directDownloadUrl: null,
+          requiresManualDownload: true,
+          lastCheckedAt: new Date().toISOString(),
+          error: null,
+          message:
+            'Configura tu usuario y repositorio de GitHub en electron-builder.yml para verificar versiones.',
+        });
+        return;
+      }
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 9000);
+      try {
+        const ghRes = await fetch(
+          `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
+            repo
+          )}/releases/latest`,
+          {
+            headers: {
+              Accept: 'application/vnd.github+json',
+              'User-Agent': `AulaAgil/${currentVersion}`,
+            },
+            signal: controller.signal,
+          }
+        );
+        if (ghRes.status === 404) {
+          res.json({
+            currentVersion,
+            status: 'up-to-date',
+            repoSlug,
+            availableVersion: null,
+            releaseNotes: '',
+            directDownloadUrl: null,
+            requiresManualDownload: true,
+            lastCheckedAt: new Date().toISOString(),
+            error: null,
+            message: 'Aún no hay versiones publicadas en GitHub Releases.',
+          });
+          return;
+        }
+        if (!ghRes.ok) {
+          res.status(502).json({
+            error: 'No se pudieron consultar las actualizaciones en GitHub.',
+          });
+          return;
+        }
+        const release = (await ghRes.json()) as {
+          tag_name?: string;
+          name?: string;
+          body?: string;
+          published_at?: string;
+          html_url?: string;
+          assets?: Array<{ name?: string; browser_download_url?: string }>;
+        };
+        const remote = String(release.tag_name || release.name || '').replace(/^v/i, '');
+        const parseVer = (v: string) =>
+          v
+            .replace(/^v/i, '')
+            .split('-')[0]
+            .split('.')
+            .map((n) => parseInt(n, 10) || 0);
+        const pa = parseVer(remote);
+        const pb = parseVer(currentVersion);
+        let isNewer = false;
+        for (let i = 0; i < 3; i++) {
+          if ((pa[i] || 0) > (pb[i] || 0)) {
+            isNewer = true;
+            break;
+          }
+          if ((pa[i] || 0) < (pb[i] || 0)) break;
+        }
+
+        const safeNotes = String(release.body || '')
+          .replace(/<[^>]+>/g, '')
+          .trim();
+
+        const exeAsset = (release.assets || []).find((a) =>
+          String(a.name || '').toLowerCase().endsWith('.exe')
+        );
+
+        res.json({
+          currentVersion,
+          status: isNewer ? 'available' : 'up-to-date',
+          repoSlug,
+          availableVersion: isNewer ? remote : null,
+          releaseNotes: isNewer ? safeNotes : '',
+          releaseDate: release.published_at || null,
+          directDownloadUrl: isNewer
+            ? exeAsset?.browser_download_url || release.html_url || null
+            : null,
+          requiresManualDownload: true,
+          lastCheckedAt: new Date().toISOString(),
+          error: null,
+          message: isNewer
+            ? `Nueva versión ${remote} disponible en GitHub Releases.`
+            : 'Ya cuentas con la última versión instalada.',
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch {
+      res.status(503).json({ error: 'Sin conexión para verificar actualizaciones' });
+    }
+  });
+
+  // --- Google Drive Cloud Backup Routes ---
+  const getDriveTokenHeader = (req: Request): string | undefined => {
+    const raw = req.headers['x-drive-access-token'];
+    return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+  };
+
+  const getPkgVersion = (): string => {
+    try {
+      const p1 = path.resolve(__dirname, 'package.json');
+      const p2 = path.resolve(__dirname, '..', 'package.json');
+      const resolved = fs.existsSync(p1) ? p1 : p2;
+      if (fs.existsSync(resolved)) {
+        return String(JSON.parse(fs.readFileSync(resolved, 'utf-8')).version || '1.0.0');
+      }
+    } catch {
+      // fallback
+    }
+    return '1.0.0';
+  };
+
+  app.get('/api/drive-backup/status', (_req: Request, res: Response) => {
+    res.json(getDrivePublicStatus());
+  });
+
+  app.post('/api/drive-backup/firebase-sync', async (req: Request, res: Response) => {
+    try {
+      const token = getDriveTokenHeader(req);
+      if (!token) {
+        res.status(400).json({ error: 'Falta token de acceso de Google Drive.' });
+        return;
+      }
+      const { email, name, avatar } = req.body ?? {};
+      const status = await syncFirebaseDriveProfile(token, {
+        email: typeof email === 'string' ? email : undefined,
+        name: typeof name === 'string' ? name : undefined,
+        avatar: typeof avatar === 'string' ? avatar : undefined,
+      });
+      res.json(status);
+    } catch (err) {
+      res.status(500).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'No se pudo sincronizar la cuenta de Google Drive.',
+      });
+    }
+  });
+
+  app.patch('/api/drive-backup/settings', (req: Request, res: Response) => {
+    const {
+      autoSchedule,
+      maxBackups,
+      clientId,
+      clientSecret,
+      clearCustomCredentials,
+    } = req.body ?? {};
+
+    const patch: Parameters<typeof saveDriveConfig>[0] = {};
+    if (
+      autoSchedule === 'off' ||
+      autoSchedule === 'on_close' ||
+      autoSchedule === 'daily' ||
+      autoSchedule === 'weekly'
+    ) {
+      patch.autoSchedule = autoSchedule;
+    }
+    if (maxBackups !== undefined) {
+      patch.maxBackups = Math.min(20, Math.max(1, Number(maxBackups) || 5));
+    }
+    if (clearCustomCredentials === true) {
+      patch.clientId = '';
+      patch.clientSecret = '';
+    } else {
+      if (typeof clientId === 'string') patch.clientId = clientId.trim();
+      if (typeof clientSecret === 'string' && clientSecret.trim()) {
+        patch.clientSecret = clientSecret.trim();
+      }
+    }
+
+    saveDriveConfig(patch);
+    res.json(getDrivePublicStatus());
+  });
+
+  app.post('/api/drive-backup/oauth/start', async (_req: Request, res: Response) => {
+    try {
+      const result = await startDesktopOAuthFlow();
+      res.json(result);
+    } catch (err) {
+      res.status(400).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'No se pudo iniciar la autenticación de escritorio con Google Drive.',
+      });
+    }
+  });
+
+  app.post('/api/drive-backup/disconnect', async (_req: Request, res: Response) => {
+    try {
+      const status = await disconnectDriveAccount();
+      res.json(status);
+    } catch {
+      res.json(getDrivePublicStatus());
+    }
+  });
+
+  app.get('/api/drive-backup/files', async (req: Request, res: Response) => {
+    try {
+      const files = await listDriveBackups(getDriveTokenHeader(req));
+      res.json({ files, status: getDrivePublicStatus() });
+    } catch (err) {
+      res.status(400).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'No se pudieron consultar los respaldos en Google Drive.',
+      });
+    }
+  });
+
+  app.post('/api/drive-backup/backup-now', async (req: Request, res: Response) => {
+    try {
+      const result = await uploadBackupToDrive(
+        getDataDir(),
+        () => readDb() as unknown as Record<string, unknown>,
+        getPkgVersion(),
+        getDriveTokenHeader(req)
+      );
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'No se pudo subir el respaldo comprimido a Google Drive.',
+      });
+    }
+  });
+
+  app.get(
+    '/api/drive-backup/files/:fileId/preview',
+    async (req: Request, res: Response) => {
+      try {
+        const manifest = await previewDriveBackup(
+          req.params.fileId,
+          getDriveTokenHeader(req)
+        );
+        res.json({ manifest });
+      } catch (err) {
+        res.status(400).json({
+          error:
+            err instanceof Error
+              ? err.message
+              : 'No se pudo inspeccionar el respaldo de Google Drive.',
+        });
+      }
+    }
+  );
+
+  app.post(
+    '/api/drive-backup/files/:fileId/restore',
+    async (req: Request, res: Response) => {
+      try {
+        const restored = await restoreDriveBackup(
+          req.params.fileId,
+          getDataDir(),
+          (nextDb) => writeDb(nextDb as unknown as DbShape),
+          getDriveTokenHeader(req)
+        );
+        const restoredUser = getFirstUser();
+        res.json({
+          db: restored.db,
+          manifest: restored.manifest,
+          user: restoredUser ? toPublicProfile(restoredUser) : null,
+          status: getDrivePublicStatus(),
+        });
+      } catch (err) {
+        res.status(400).json({
+          error:
+            err instanceof Error
+              ? err.message
+              : 'No se pudo restaurar el respaldo desde Google Drive.',
+        });
+      }
+    }
+  );
+
+  app.delete('/api/drive-backup/files/:fileId', async (req: Request, res: Response) => {
+    try {
+      await deleteDriveBackup(req.params.fileId, getDriveTokenHeader(req));
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(400).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'No se pudo eliminar el archivo de Google Drive.',
+      });
+    }
+  });
+
+  app.get('/api/drive-backup/download-zip', async (_req: Request, res: Response) => {
+    try {
+      const { fileName, zipBuffer } = await buildBackupZipBuffer(
+        getDataDir(),
+        () => readDb() as unknown as Record<string, unknown>,
+        getPkgVersion()
+      );
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.send(zipBuffer);
+    } catch (err) {
+      res.status(500).json({
+        error:
+          err instanceof Error ? err.message : 'No se pudo generar el respaldo .zip.',
+      });
+    }
+  });
+
+  app.post('/api/drive-backup/restore-zip', async (req: Request, res: Response) => {
+    try {
+      const { zipBase64 } = req.body ?? {};
+      if (typeof zipBase64 !== 'string' || !zipBase64.trim()) {
+        res.status(400).json({ error: 'Archivo .zip vacío o inválido.' });
+        return;
+      }
+      const buffer = Buffer.from(zipBase64, 'base64');
+      const restored = await restoreBackupZipBuffer(buffer, getDataDir(), (nextDb) =>
+        writeDb(nextDb as unknown as DbShape)
+      );
+      const restoredUser = getFirstUser();
+      res.json({
+        db: restored.db,
+        manifest: restored.manifest,
+        user: restoredUser ? toPublicProfile(restoredUser) : null,
+      });
+    } catch (err) {
+      res.status(400).json({
+        error:
+          err instanceof Error ? err.message : 'No se pudo restaurar el archivo .zip.',
+      });
+    }
+  });
+
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -2368,6 +3161,27 @@ export async function startServer(customPort = PORT) {
       resolve(server);
     });
   });
+}
+
+export async function triggerOnCloseDriveBackup(): Promise<boolean> {
+  try {
+    const cfg = getDriveConfig();
+    if (
+      cfg.autoSchedule !== 'on_close' ||
+      cfg.authMode !== 'desktop_oauth' ||
+      (!cfg.refreshToken && !cfg.accessToken)
+    ) {
+      return false;
+    }
+    await uploadBackupToDrive(
+      getDataDir(),
+      () => readDb() as unknown as Record<string, unknown>,
+      '1.0.0'
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 if (process.env.LIBRETA_NO_AUTOSTART !== '1') {

@@ -150,27 +150,19 @@ export function IncidentsAIView({
       .join('\n');
 
     try {
-      const response = await fetch('/api/ai/behavior-report', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          studentName: student.fullName,
-          groupName: classroom.name,
-          schoolName: classroom.schoolName,
-          teacherName: classroom.teacherName,
-          guardianName: student.guardianName,
-          incidentDate: incident.date,
-          category: CATEGORY_LABELS[incident.category],
-          severity: SEVERITY_LABELS[incident.severity],
-          description: incident.description,
-          actionTaken: incident.actionTaken,
-          recentIncidentsSummary: recentSummary,
-        }),
+      const data = await localApi.generateBehaviorReport({
+        studentName: student.fullName,
+        groupName: classroom.name,
+        schoolName: classroom.schoolName,
+        teacherName: classroom.teacherName,
+        guardianName: student.guardianName,
+        incidentDate: incident.date,
+        category: CATEGORY_LABELS[incident.category],
+        severity: SEVERITY_LABELS[incident.severity],
+        description: incident.description,
+        actionTaken: incident.actionTaken,
+        recentIncidentsSummary: recentSummary,
       });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'No se pudieron generar los reportes con IA.');
-      }
 
       const parentsText = [
         data.parentReport,

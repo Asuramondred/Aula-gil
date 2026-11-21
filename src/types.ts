@@ -298,3 +298,118 @@ export type AppSection =
   | 'diario'
   | 'calificaciones'
   | 'configuracion';
+
+export interface UserProfile {
+  id: string;
+  username: string;
+  displayName: string;
+  avatarDataUrl: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuthStatusResponse {
+  hasUser: boolean;
+  authenticated: boolean;
+  profile: UserProfile | null;
+}
+
+export interface RecoveryQuestionsResponse {
+  username: string;
+  securityQ1: string;
+  securityQ2: string;
+}
+
+export type AppUpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'up-to-date'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+  | 'unconfigured';
+
+export interface AppUpdaterState {
+  isDesktopApp: boolean;
+  platform: string;
+  isPackaged: boolean;
+  isPortable: boolean;
+  supportsAutoInstall: boolean;
+  currentVersion: string;
+  status: AppUpdateStatus;
+  availableVersion: string | null;
+  releaseNotes: string;
+  releaseDate: string | null;
+  progress: number;
+  transferredBytes: number;
+  totalBytes: number;
+  directDownloadUrl: string | null;
+  requiresManualDownload: boolean;
+  repoSlug: string;
+  lastCheckedAt: string | null;
+  error: string | null;
+  message: string;
+}
+
+export interface AulaAgilUpdaterBridge {
+  getState: () => Promise<AppUpdaterState>;
+  checkForUpdates: () => Promise<AppUpdaterState>;
+  downloadUpdate: () => Promise<{ ok?: boolean; openedExternal?: boolean; state: AppUpdaterState }>;
+  quitAndInstall: () => Promise<{ ok: boolean }>;
+  openReleaseDownload: (url?: string) => Promise<{ ok: boolean; error?: string }>;
+  onStatus: (callback: (state: AppUpdaterState) => void) => () => void;
+}
+
+export type DriveAutoSchedule = 'off' | 'on_close' | 'daily' | 'weekly';
+
+export interface DriveBackupStatus {
+  connected: boolean;
+  authMode: 'none' | 'desktop_oauth' | 'firebase';
+  hasDesktopCredentials: boolean;
+  desktopClientId: string;
+  hasDesktopClientSecret: boolean;
+  hasPersistentRefreshToken: boolean;
+  userEmail: string;
+  userName: string;
+  userAvatar: string;
+  autoSchedule: DriveAutoSchedule;
+  maxBackups: number;
+  lastBackupAt: string;
+  lastBackupFile: string;
+  folderName: string;
+}
+
+export interface DriveBackupFile {
+  id: string;
+  name: string;
+  sizeBytes: number;
+  createdTime: string;
+  modifiedTime: string;
+}
+
+export interface DriveBackupManifest {
+  app: string;
+  version: string;
+  createdAt: string;
+  hasSqliteDb: boolean;
+  classroomCount: number;
+  studentCount: number;
+  assignmentCount: number;
+  incidentCount: number;
+  dailyLogCount: number;
+  lessonPlanCount: number;
+  attachmentCount: number;
+}
+
+declare global {
+  const __APP_VERSION__: string;
+  interface Window {
+    aulaAgilUpdater?: AulaAgilUpdaterBridge;
+    aulaAgilDrive?: {
+      openAuthUrl: (url: string) => Promise<{ ok: boolean; error?: string }>;
+    };
+  }
+}
+
+

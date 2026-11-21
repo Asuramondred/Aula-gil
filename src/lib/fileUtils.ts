@@ -116,3 +116,14 @@ export async function processLessonPlanFile(file: File): Promise<ProcessedFileRe
     dataUrl,
   };
 }
+
+export async function processAvatarImage(file: File): Promise<string> {
+  if (!file.type.startsWith('image/')) {
+    throw new Error('Selecciona una imagen válida (PNG, JPG o WebP).');
+  }
+  const compressed = await compressImageToDataUrl(file, 200, 0.82);
+  if (compressed.length > 320_000) {
+    return await compressImageToDataUrl(file, 140, 0.7);
+  }
+  return compressed;
+}

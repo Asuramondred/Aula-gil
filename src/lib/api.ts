@@ -1,18 +1,64 @@
+import { getCachedDriveAccessToken } from './googleDriveAuth';
 import type {
   AiEngineKey,
   AiExecutionMeta,
   ApiKeyStatus,
+  AuthStatusResponse,
+  DriveAutoSchedule,
+  DriveBackupFile,
+  DriveBackupManifest,
+  DriveBackupStatus,
   LocalDatabase,
+  RecoveryQuestionsResponse,
+  UserProfile,
 } from '../types';
 
-async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
+let inMemoryAuthToken: string | null = null;
+let unauthorizedHandler: (() => void) | null = null;
+
+export function setAuthToken(token: string | null) {
+  inMemoryAuthToken = token;
+}
+
+export function getAuthToken(): string | null {
+  return inMemoryAuthToken;
+}
+
+export function setUnauthorizedHandler(cb: (() => void) | null) {
+  unauthorizedHandler = cb;
+}
+
+async function authorizedFetch(url: string, options?: RequestInit): Promise<Response> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...((options?.headers as Record<string, string>) || {}),
+  };
+  if (inMemoryAuthToken) {
+    headers['Authorization'] = `Bearer ${inMemoryAuthToken}`;
+  }
+  const driveToken = getCachedDriveAccessToken();
+  if (driveToken && url.startsWith('/api/drive-backup')) {
+    headers['X-Drive-Access-Token'] = driveToken;
+  }
   const res = await fetch(url, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options?.headers || {}),
-    },
     ...options,
+    headers,
   });
+  if (
+    res.status === 401 &&
+    !url.startsWith('/api/auth/login') &&
+    !url.startsWith('/api/auth/recover') &&
+    !url.startsWith('/api/auth/change-password') &&
+    unauthorizedHandler
+  ) {
+    inMemoryAuthToken = null;
+    unauthorizedHandler();
+  }
+  return res;
+}
+
+async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
+  const res = await authorizedFetch(url, options);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(data.error || `Error en solicitud (${res.status})`);
@@ -238,8 +284,145 @@ export const localApi = {
       body: JSON.stringify(payload),
     }),
 
+  generateBehaviorReport: (payload: Record<string, unknown>) =>
+    requestJson<{
+      parentReport: string;
+      directionReport: string;
+      suggestedAgreements?: string;
+      _aiMeta?: AiExecutionMeta;
+    }>('/api/ai/behavior-report', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  evaluateConduct: (payload: Record<string, unknown>) =>
+    requestJson<{
+      evaluations: Array<{
+        studentId: string;
+        conductBase10: number;
+        reason: string;
+        suggestedComment: string;
+      }>;
+      _aiMeta?: AiExecutionMeta;
+    }>('/api/ai/evaluate-conduct', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  draftGradeComment: (payload: Record<string, unknown>) =>
+    requestJson<{
+      comment: string;
+      _aiMeta?: AiExecutionMeta;
+    }>('/api/ai/draft-comment', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  generateDailyLog: (payload: Record<string, unknown>) =>
+    requestJson<{
+      topicsCovered: string;
+      studentObservations: string;
+      agreementsPending: string;
+      pedagogicalReflection: string;
+      _aiMeta?: AiExecutionMeta;
+    }>('/api/ai/daily-log', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  getAuthStatus: () => requestJson<AuthStatusResponse>('/api/auth/status'),
+
+  getRecoveryPreview: () =>
+    requestJson<{ recoveryKey: string }>('/api/auth/recovery-preview'),
+
+  registerAccount: (payload: {
+    username: string;
+    displayName: string;
+    password: string;
+    avatarDataUrl: string;
+    recoveryKey: string;
+    securityQ1: string;
+    securityA1: string;
+    securityQ2: string;
+    securityA2: string;
+  }) =>
+    requestJson<{ token: string; user: UserProfile }>('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  login: (payload: { username: string; password: string }) =>
+    requestJson<{ token: string; user: UserProfile }>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  logout: () =>
+    requestJson<{ ok: boolean }>('/api/auth/logout', {
+      method: 'POST',
+    }),
+
+  getRecoveryQuestions: (username?: string) =>
+    requestJson<RecoveryQuestionsResponse>(
+      `/api/auth/recovery-questions${
+        username ? `?username=${encodeURIComponent(username)}` : ''
+      }`
+    ),
+
+  recoverWithKey: (payload: {
+    username: string;
+    recoveryKey: string;
+    newPassword: string;
+  }) =>
+    requestJson<{
+      ok: boolean;
+      newRecoveryKey: string;
+      token: string;
+      user: UserProfile;
+    }>('/api/auth/recover/key', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  recoverWithQuestions: (payload: {
+    username: string;
+    answer1: string;
+    answer2: string;
+    newPassword: string;
+  }) =>
+    requestJson<{
+      ok: boolean;
+      token: string;
+      user: UserProfile;
+    }>('/api/auth/recover/questions', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  factoryReset: (payload: { confirmation: string; doubleConfirmed: boolean }) =>
+    requestJson<{ ok: boolean }>('/api/auth/factory-reset', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateProfile: (payload: {
+    username?: string;
+    displayName?: string;
+    avatarDataUrl?: string;
+  }) =>
+    requestJson<{ user: UserProfile }>('/api/auth/profile', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  changePassword: (payload: { currentPassword: string; newPassword: string }) =>
+    requestJson<{ ok: boolean; user: UserProfile }>('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
   exportBackup: async (): Promise<LocalDatabase> => {
-    const res = await fetch('/api/backup/export');
+    const res = await authorizedFetch('/api/backup/export');
     const data = await res.json().catch(() => null);
     if (!res.ok || !data) {
       throw new Error('No se pudo exportar la copia de seguridad.');
@@ -296,4 +479,98 @@ export const localApi = {
     requestJson<{ ok: boolean; models: string[]; error?: string }>(
       `/api/settings/ollama-check${url ? `?url=${encodeURIComponent(url)}` : ''}`
     ),
+
+  // Google Drive & Full ZIP Backup
+  getDriveBackupStatus: () =>
+    requestJson<DriveBackupStatus>('/api/drive-backup/status'),
+
+  syncFirebaseDriveProfile: (payload: {
+    email?: string;
+    name?: string;
+    avatar?: string;
+  }) =>
+    requestJson<DriveBackupStatus>('/api/drive-backup/firebase-sync', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  saveDriveBackupSettings: (payload: {
+    autoSchedule?: DriveAutoSchedule;
+    maxBackups?: number;
+    clientId?: string;
+    clientSecret?: string;
+    clearCustomCredentials?: boolean;
+  }) =>
+    requestJson<DriveBackupStatus>('/api/drive-backup/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  startDesktopDriveOAuth: () =>
+    requestJson<{ authUrl: string; redirectUri: string }>(
+      '/api/drive-backup/oauth/start',
+      { method: 'POST' }
+    ),
+
+  disconnectDriveBackup: () =>
+    requestJson<DriveBackupStatus>('/api/drive-backup/disconnect', {
+      method: 'POST',
+    }),
+
+  listDriveBackups: () =>
+    requestJson<{ files: DriveBackupFile[]; status: DriveBackupStatus }>(
+      '/api/drive-backup/files'
+    ),
+
+  backupNowToDrive: () =>
+    requestJson<{
+      file: DriveBackupFile;
+      manifest: DriveBackupManifest;
+      status: DriveBackupStatus;
+    }>('/api/drive-backup/backup-now', {
+      method: 'POST',
+    }),
+
+  previewDriveBackup: (fileId: string) =>
+    requestJson<{ manifest: DriveBackupManifest }>(
+      `/api/drive-backup/files/${encodeURIComponent(fileId)}/preview`
+    ),
+
+  restoreDriveBackup: (fileId: string) =>
+    requestJson<{
+      db: LocalDatabase;
+      manifest: DriveBackupManifest;
+      user: UserProfile | null;
+      status: DriveBackupStatus;
+    }>(`/api/drive-backup/files/${encodeURIComponent(fileId)}/restore`, {
+      method: 'POST',
+    }),
+
+  deleteDriveBackup: (fileId: string) =>
+    requestJson<{ ok: boolean }>(
+      `/api/drive-backup/files/${encodeURIComponent(fileId)}`,
+      { method: 'DELETE' }
+    ),
+
+  downloadFullZipBackup: async (): Promise<{ blob: Blob; fileName: string }> => {
+    const res = await authorizedFetch('/api/drive-backup/download-zip');
+    if (!res.ok) {
+      throw new Error('No se pudo generar el archivo de respaldo .zip.');
+    }
+    const cd = res.headers.get('content-disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/i);
+    const fileName = match?.[1] || 'Respaldo_AulaAgil.zip';
+    const blob = await res.blob();
+    return { blob, fileName };
+  },
+
+  restoreFullZipBackup: (zipBase64: string) =>
+    requestJson<{
+      db: LocalDatabase;
+      manifest: DriveBackupManifest;
+      user: UserProfile | null;
+    }>('/api/drive-backup/restore-zip', {
+      method: 'POST',
+      body: JSON.stringify({ zipBase64 }),
+    }),
 };

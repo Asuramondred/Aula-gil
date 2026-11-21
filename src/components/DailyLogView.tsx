@@ -162,20 +162,12 @@ export function DailyLogView({
     setErrorMsg('');
     setStatusMsg('');
     try {
-      const resp = await fetch('/api/ai/daily-log', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          date,
-          groupName: classroom.name,
-          period,
-          rawNarrative,
-        }),
+      const data = await localApi.generateDailyLog({
+        date,
+        groupName: classroom.name,
+        period,
+        rawNarrative,
       });
-      const data = await resp.json();
-      if (!resp.ok) {
-        throw new Error(data.error || 'No se pudo generar el reporte diario.');
-      }
       setTopicsCovered(data.topicsCovered || '');
       setStudentObservations(data.studentObservations || '');
       setAgreementsPending(data.agreementsPending || '');

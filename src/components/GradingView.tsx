@@ -265,18 +265,10 @@ export function GradingView({
         };
       });
 
-      const response = await fetch('/api/ai/evaluate-conduct', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          periodName: selectedPeriodName,
-          students: payloadStudents,
-        }),
+      const data = await localApi.evaluateConduct({
+        periodName: selectedPeriodName,
+        students: payloadStudents,
       });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'No se pudo evaluar conducta con IA.');
-      }
 
       const evaluations: Array<{
         studentId: string;
@@ -347,19 +339,13 @@ export function GradingView({
         attendanceDays,
         incidents
       );
-      const response = await fetch('/api/ai/draft-comment', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          studentName: editingStudent.fullName,
-          periodName: selectedPeriodName,
-          finalGrade: computed.finalGrade,
-          scaleMax: effectivePeriodConfig.scaleMax,
-          summary: `Trabajos ${computed.trabajosAvg10 !== null ? `${computed.trabajosAvg10}/10` : 'Sin datos'}, Tareas ${computed.tareasAvg10 !== null ? `${computed.tareasAvg10}/10` : 'Sin datos'}, Examen ${computed.examenAvg10 !== null ? `${computed.examenAvg10}/10` : 'Sin datos'}, Asistencia ${computed.asistenciaPct !== null ? `${computed.asistenciaPct}%` : 'Sin datos'}, Conducta ${computed.conductBase10}/10. ${modalDraft.aiConductReason}`,
-        }),
+      const data = await localApi.draftGradeComment({
+        studentName: editingStudent.fullName,
+        periodName: selectedPeriodName,
+        finalGrade: computed.finalGrade,
+        scaleMax: effectivePeriodConfig.scaleMax,
+        summary: `Trabajos ${computed.trabajosAvg10 !== null ? `${computed.trabajosAvg10}/10` : 'Sin datos'}, Tareas ${computed.tareasAvg10 !== null ? `${computed.tareasAvg10}/10` : 'Sin datos'}, Examen ${computed.examenAvg10 !== null ? `${computed.examenAvg10}/10` : 'Sin datos'}, Asistencia ${computed.asistenciaPct !== null ? `${computed.asistenciaPct}%` : 'Sin datos'}, Conducta ${computed.conductBase10}/10. ${modalDraft.aiConductReason}`,
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Error al redactar comentario.');
       setModalDraft((prev) => (prev ? { ...prev, customComment: data.comment || '' } : prev));
     } catch (error) {
       setAiError(error instanceof Error ? error.message : 'Error al redactar comentario.');
