@@ -39,6 +39,7 @@ import {
   signOutGoogleDrive,
 } from '../lib/googleDriveAuth';
 import { BackupModal, type BackupModalState } from './BackupModal';
+import { GitHubLinkModal } from './GitHubLinkModal';
 import type {
   AiEngineKey,
   AiExecutionMeta,
@@ -50,6 +51,7 @@ import type {
   DriveBackupFile,
   DriveBackupManifest,
   DriveBackupStatus,
+  GitHubUpdateConfigStatus,
   LocalDatabase,
   TrimesterPeriod,
   UserProfile,
@@ -249,6 +251,9 @@ export function SettingsView({
   const [previewError, setPreviewError] = useState('');
   const [modalBusy, setModalBusy] = useState(false);
   const [downloadingZip, setDownloadingZip] = useState(false);
+  const [githubStatus, setGithubStatus] = useState<GitHubUpdateConfigStatus | null>(null);
+  const [githubModalOpen, setGithubModalOpen] = useState(false);
+  const [disconnectingGitHub, setDisconnectingGitHub] = useState(false);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -328,6 +333,11 @@ export function SettingsView({
           refreshDriveFiles().catch(() => {});
         }
       })
+      .catch(() => {});
+
+    localApi
+      .getGitHubUpdateStatus()
+      .then((gh) => setGithubStatus(gh))
       .catch(() => {});
   }, []);
 
@@ -2088,6 +2098,114 @@ export function SettingsView({
               </span>
             </div>
 
+            {/* GitHub Repository / Account Linking Panel */}
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
+              {!githubStatus?.repoSlug ? (
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="space-y-0.5">
+                    <p className="text-xs font-semibold text-slate-800">
+                      Fuente de actualizaciones en GitHub
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      {githubStatus?.hasAccessToken && githubStatus.githubLogin
+                        ? `Cuenta @${githubStatus.githubLogin} conectada. Selecciona el repositorio para buscar versiones.`
+                        : 'Vincula tu cuenta o repositorio de GitHub para consultar e instalar nuevas versiones.'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setGithubModalOpen(true)}
+                    className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg whitespace-nowrap shrink-0"
+                  >
+                    <svg
+                      className="w-4 h-4 fill-current shrink-0"
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                    >
+                      <path
+                        fillRule="evenodd"
+                        clipRule="evenodd"
+                        d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"
+                      />
+                    </svg>
+                    <span>Conectar con GitHub</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    {githubStatus.githubAvatar ? (
+                      <img
+                        src={githubStatus.githubAvatar}
+                        alt={githubStatus.githubLogin || githubStatus.owner}
+                        className="w-9 h-9 rounded-lg border border-slate-200 object-cover shrink-0"
+                      />
+                    ) : (
+                      <div className="w-9 h-9 rounded-lg border border-slate-200 bg-slate-900 text-white flex items-center justify-center shrink-0">
+                        <svg
+                          className="w-4 h-4 fill-current"
+                          viewBox="0 0 24 24"
+                          aria-hidden="true"
+                        >
+                          <path
+                            fillRule="evenodd"
+                            clipRule="evenodd"
+                            d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"
+                          />
+                        </svg>
+                      </div>
+                    )}
+                    <div className="min-w-0">
+                      <a
+                        href={`https://github.com/${githubStatus.repoSlug}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-xs font-mono font-semibold text-slate-900 hover:text-blue-700 truncate"
+                      >
+                        {githubStatus.repoSlug}
+                        <ExternalLink className="w-3 h-3 shrink-0" />
+                      </a>
+                      <p className="text-[11px] text-slate-500 truncate">
+                        {githubStatus.githubLogin
+                          ? `Cuenta @${githubStatus.githubLogin}`
+                          : 'Repositorio público'}{' '}
+                        · {githubStatus.repoPrivate ? 'Privado' : 'Releases públicos'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setGithubModalOpen(true)}
+                      className="px-2.5 py-1.5 text-[11px] font-medium text-slate-700 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg whitespace-nowrap"
+                    >
+                      Cambiar
+                    </button>
+                    {githubStatus.connected && (
+                      <button
+                        type="button"
+                        disabled={disconnectingGitHub}
+                        onClick={async () => {
+                          setDisconnectingGitHub(true);
+                          try {
+                            const next = await localApi.disconnectGitHubUpdates();
+                            setGithubStatus(next);
+                          } finally {
+                            setDisconnectingGitHub(false);
+                          }
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg whitespace-nowrap"
+                      >
+                        <Unlink className="w-3 h-3" />
+                        Desvincular
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="flex flex-wrap items-center justify-between gap-3">
               <button
                 type="button"
@@ -2127,16 +2245,13 @@ export function SettingsView({
               </div>
             )}
 
-            {updater.status === 'unconfigured' && (
+            {updater.status === 'unconfigured' && !githubStatus?.repoSlug && (
               <div className="text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 space-y-1">
                 <p className="font-semibold text-slate-800">
-                  Repositorio de GitHub pendiente de configurar
+                  Repositorio de GitHub pendiente de vincular
                 </p>
                 <p className="text-slate-600">
-                  Edita <code className="font-mono">owner</code> y{' '}
-                  <code className="font-mono">repo</code> en{' '}
-                  <code className="font-mono">electron-builder.yml</code> antes de
-                  publicar tus releases en GitHub.
+                  Haz clic en <strong>Conectar con GitHub</strong> arriba para vincular tu repositorio o cuenta de GitHub sin necesidad de editar archivos.
                 </p>
               </div>
             )}
@@ -2432,6 +2547,18 @@ export function SettingsView({
         onConfirmRestoreDrive={handleConfirmRestoreDrive}
         onConfirmDeleteDrive={handleConfirmDeleteDrive}
         onSaveDesktopCredentials={handleSaveDesktopCredentials}
+      />
+
+      <GitHubLinkModal
+        open={githubModalOpen}
+        status={githubStatus}
+        onClose={() => setGithubModalOpen(false)}
+        onUpdated={(next) => {
+          setGithubStatus(next);
+          if (next.repoSlug) {
+            onCheckUpdates();
+          }
+        }}
       />
     </div>
   );

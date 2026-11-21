@@ -8,6 +8,8 @@ import type {
   DriveBackupFile,
   DriveBackupManifest,
   DriveBackupStatus,
+  GitHubRepoSummary,
+  GitHubUpdateConfigStatus,
   LocalDatabase,
   RecoveryQuestionsResponse,
   UserProfile,
@@ -572,5 +574,51 @@ export const localApi = {
     }>('/api/drive-backup/restore-zip', {
       method: 'POST',
       body: JSON.stringify({ zipBase64 }),
+    }),
+
+  // GitHub Repository & OAuth Linking for Updates
+  getGitHubUpdateStatus: () =>
+    requestJson<GitHubUpdateConfigStatus>('/api/github-updates/status'),
+
+  saveGitHubCredentials: (payload: {
+    clientId?: string;
+    clientSecret?: string;
+    clearOAuthCredentials?: boolean;
+  }) =>
+    requestJson<GitHubUpdateConfigStatus>('/api/github-updates/credentials', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  linkGitHubRepo: (payload: { repoInput: string; accessToken?: string }) =>
+    requestJson<GitHubUpdateConfigStatus>('/api/github-updates/link-repo', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  linkGitHubWithToken: (accessToken: string) =>
+    requestJson<GitHubUpdateConfigStatus>('/api/github-updates/link-token', {
+      method: 'POST',
+      body: JSON.stringify({ accessToken }),
+    }),
+
+  listGitHubUserRepos: () =>
+    requestJson<{ repos: GitHubRepoSummary[] }>('/api/github-updates/repos'),
+
+  startGitHubWebOAuth: () =>
+    requestJson<{ authUrl: string; redirectUri: string }>(
+      '/api/github-updates/oauth/start-web',
+      { method: 'POST' }
+    ),
+
+  startGitHubDesktopOAuth: () =>
+    requestJson<{ authUrl: string; redirectUri: string }>(
+      '/api/github-updates/oauth/start-desktop',
+      { method: 'POST' }
+    ),
+
+  disconnectGitHubUpdates: () =>
+    requestJson<GitHubUpdateConfigStatus>('/api/github-updates/disconnect', {
+      method: 'POST',
     }),
 };

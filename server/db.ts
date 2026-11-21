@@ -49,6 +49,21 @@ export interface DbGoogleDriveConfig {
   updatedAt: string;
 }
 
+export interface DbGitHubUpdateConfig {
+  connected: boolean;
+  authMode: 'none' | 'oauth' | 'pat' | 'public_repo';
+  oauthClientId: string;
+  oauthClientSecret: string;
+  accessToken: string;
+  githubLogin: string;
+  githubName: string;
+  githubAvatar: string;
+  repoOwner: string;
+  repoName: string;
+  repoPrivate: boolean;
+  updatedAt: string;
+}
+
 let sqliteDb: Database | null = null;
 let sqlJsEngine: SqlJsStatic | null = null;
 let currentSqlitePath = '';
@@ -136,6 +151,23 @@ function ensureSqliteSchema(db: Database): void {
       max_backups INTEGER NOT NULL DEFAULT 5,
       last_backup_at TEXT NOT NULL DEFAULT '',
       last_backup_file TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT ''
+    );
+  `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS github_update_config (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      connected INTEGER NOT NULL DEFAULT 0,
+      auth_mode TEXT NOT NULL DEFAULT 'none',
+      oauth_client_id TEXT NOT NULL DEFAULT '',
+      oauth_client_secret TEXT NOT NULL DEFAULT '',
+      access_token TEXT NOT NULL DEFAULT '',
+      github_login TEXT NOT NULL DEFAULT '',
+      github_name TEXT NOT NULL DEFAULT '',
+      github_avatar TEXT NOT NULL DEFAULT '',
+      repo_owner TEXT NOT NULL DEFAULT '',
+      repo_name TEXT NOT NULL DEFAULT '',
+      repo_private INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL DEFAULT ''
     );
   `);
@@ -483,6 +515,11 @@ export function exportSanitizedSqliteBuffer(): Buffer {
        SET access_token = '', refresh_token = '', client_secret = '', token_expiry = 0
        WHERE id = 1`
     );
+    clone.run(
+      `UPDATE github_update_config
+       SET access_token = '', oauth_client_secret = ''
+       WHERE id = 1`
+    );
     return Buffer.from(clone.export());
   } finally {
     clone.close();
@@ -494,6 +531,7 @@ export function replaceSqliteFromBuffer(buf: Buffer): void {
     throw new Error('Motor SQLite no inicializado.');
   }
   const activeDrive = getDriveConfig();
+  const activeGitHub = getGitHubConfig();
   const candidate = new sqlJsEngine.Database(buf);
   let valid = false;
   try {
@@ -521,7 +559,115 @@ export function replaceSqliteFromBuffer(buf: Buffer): void {
     old.close();
   }
 
-  // Preserve current active Drive credentials/tokens so the teacher stays linked
+  // Preserve current active Drive & GitHub credentials/tokens so the teacher stays linked
   saveDriveConfig(activeDrive);
+  saveGitHubConfig(activeGitHub);
+}
+
+const DEFAULT_GITHUB_CONFIG: DbGitHubUpdateConfig = {
+  connected: false,
+  authMode: 'none',
+  oauthClientId: '',
+  oauthClientSecret: '',
+  accessToken: '',
+  githubLogin: '',
+  githubName: '',
+  githubAvatar: '',
+  repoOwner: '',
+  repoName: '',
+  repoPrivate: false,
+  updatedAt: '',
+};
+
+export function getGitHubConfig(): DbGitHubUpdateConfig {
+  const db = ensureDb();
+  const stmt = db.prepare('SELECT * FROM github_update_config WHERE id = 1 LIMIT 1');
+  try {
+    if (!stmt.step()) return { ...DEFAULT_GITHUB_CONFIG };
+    const r = stmt.getAsObject();
+    const mode =
+      r.auth_mode === 'oauth' || r.auth_mode === 'pat' || r.auth_mode === 'public_repo'
+        ? r.auth_mode
+        : 'none';
+    return {
+      connected: Number(r.connected || 0) === 1,
+      authMode: mode,
+      oauthClientId: String(r.oauth_client_id || ''),
+      oauthClientSecret: String(r.oauth_client_secret || ''),
+      accessToken: String(r.access_token || ''),
+      githubLogin: String(r.github_login || ''),
+      githubName: String(r.github_name || ''),
+      githubAvatar: String(r.github_avatar || ''),
+      repoOwner: String(r.repo_owner || ''),
+      repoName: String(r.repo_name || ''),
+      repoPrivate: Number(r.repo_private || 0) === 1,
+      updatedAt: String(r.updated_at || ''),
+    };
+  } finally {
+    stmt.free();
+  }
+}
+
+export function saveGitHubConfig(
+  patch: Partial<DbGitHubUpdateConfig>
+): DbGitHubUpdateConfig {
+  const db = ensureDb();
+  const current = getGitHubConfig();
+  const next: DbGitHubUpdateConfig = {
+    ...current,
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  };
+
+  db.run(
+    `INSERT INTO github_update_config (
+      id, connected, auth_mode, oauth_client_id, oauth_client_secret,
+      access_token, github_login, github_name, github_avatar,
+      repo_owner, repo_name, repo_private, updated_at
+    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      connected = excluded.connected,
+      auth_mode = excluded.auth_mode,
+      oauth_client_id = excluded.oauth_client_id,
+      oauth_client_secret = excluded.oauth_client_secret,
+      access_token = excluded.access_token,
+      github_login = excluded.github_login,
+      github_name = excluded.github_name,
+      github_avatar = excluded.github_avatar,
+      repo_owner = excluded.repo_owner,
+      repo_name = excluded.repo_name,
+      repo_private = excluded.repo_private,
+      updated_at = excluded.updated_at`,
+    [
+      next.connected ? 1 : 0,
+      next.authMode,
+      next.oauthClientId,
+      next.oauthClientSecret,
+      next.accessToken,
+      next.githubLogin,
+      next.githubName,
+      next.githubAvatar,
+      next.repoOwner,
+      next.repoName,
+      next.repoPrivate ? 1 : 0,
+      next.updatedAt,
+    ]
+  );
+  persistSqliteToDisk();
+  return getGitHubConfig();
+}
+
+export function clearGitHubLink(): DbGitHubUpdateConfig {
+  return saveGitHubConfig({
+    connected: false,
+    authMode: 'none',
+    accessToken: '',
+    githubLogin: '',
+    githubName: '',
+    githubAvatar: '',
+    repoOwner: '',
+    repoName: '',
+    repoPrivate: false,
+  });
 }
 

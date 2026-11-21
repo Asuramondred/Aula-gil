@@ -49,7 +49,7 @@ Al terminar encontrarás en `release/`:
 - `latest.yml` (metadatos de actualización para GitHub Releases; en macOS con `npm run electron:build:mac` se genera `latest-mac.yml` y `.dmg`).
 
 ### Actualizaciones automáticas con GitHub Releases
-1. Abre **`electron-builder.yml`** y cambia `TU_USUARIO_GITHUB` y `NOMBRE_DEL_REPO` por los datos de tu repositorio en GitHub.
+1. Puedes vincular tu cuenta o repositorio directamente dentro de la app en **Configuración → Actualizaciones del Sistema → Conectar con GitHub** (o editando `owner` y `repo` en **`electron-builder.yml`** antes de compilar).
 2. Cuando publiques una nueva versión, sube el campo `"version"` en `package.json` (por ejemplo de `1.0.0` a `1.1.0`), compila con `npm run electron:build` y sube a tu **GitHub Release** los archivos de `release/` (incluyendo `latest.yml` / `latest-mac.yml`).
 3. Los docentes con la app instalada podrán buscar e instalar la nueva versión desde **Configuración → Actualizaciones del Sistema** sin perder sus datos locales (`userData`).
 

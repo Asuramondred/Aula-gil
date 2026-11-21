@@ -12,7 +12,35 @@ let lastCheckManual = false;
 let checkInFlight = false;
 let closeBackupDone = false;
 
+function getRuntimeUpdaterJsonPath() {
+  const dataDir = app.isPackaged
+    ? app.getPath('userData')
+    : path.resolve(__dirname, '..', 'data');
+  return path.join(dataDir, 'github-updater.json');
+}
+
 function readPublishConfig() {
+  try {
+    const runtimeFile = getRuntimeUpdaterJsonPath();
+    if (fs.existsSync(runtimeFile)) {
+      const parsed = JSON.parse(fs.readFileSync(runtimeFile, 'utf-8'));
+      const owner = String(parsed.owner || '').trim();
+      const repo = String(parsed.repo || '').trim();
+      if (owner && repo) {
+        return {
+          owner,
+          repo,
+          private: Boolean(parsed.private),
+          token: String(parsed.token || ''),
+          isConfigured: true,
+          source: 'linked',
+        };
+      }
+    }
+  } catch {
+    // Fallback to YAML config
+  }
+
   const candidates = [
     path.join(process.resourcesPath || '', 'app-update.yml'),
     path.join(app.getAppPath(), 'electron-builder.yml'),
@@ -36,7 +64,10 @@ function readPublishConfig() {
         return {
           owner,
           repo,
+          private: false,
+          token: '',
           isConfigured: !isPlaceholder,
+          source: 'yaml',
         };
       }
     } catch {
@@ -47,7 +78,10 @@ function readPublishConfig() {
   return {
     owner: 'TU_USUARIO_GITHUB',
     repo: 'NOMBRE_DEL_REPO',
+    private: false,
+    token: '',
     isConfigured: false,
+    source: 'yaml',
   };
 }
 
@@ -242,11 +276,15 @@ async function checkGitHubReleaseFallback(manual) {
       publishCfg.owner
     )}/${encodeURIComponent(publishCfg.repo)}/releases/latest`;
 
+    const headers = {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': `AulaAgil/${app.getVersion()}`,
+    };
+    if (publishCfg.token) {
+      headers.Authorization = `Bearer ${publishCfg.token}`;
+    }
     const res = await fetch(apiUrl, {
-      headers: {
-        Accept: 'application/vnd.github+json',
-        'User-Agent': `AulaAgil/${app.getVersion()}`,
-      },
+      headers,
       signal: controller.signal,
     });
 
@@ -473,6 +511,17 @@ async function performUpdateCheck(manual) {
       return await checkGitHubReleaseFallback(manual);
     }
 
+    if (publishCfg.source === 'linked') {
+      autoUpdater.setFeedURL({
+        provider: 'github',
+        owner: publishCfg.owner,
+        repo: publishCfg.repo,
+        ...(publishCfg.private && publishCfg.token
+          ? { private: true, token: publishCfg.token }
+          : {}),
+      });
+    }
+
     await autoUpdater.checkForUpdates();
     return { ...updaterState };
   } catch (err) {
@@ -602,6 +651,23 @@ function registerUpdaterIpc() {
       return { ok: false, error: 'URL de autenticación inválida.' };
     }
   });
+
+  ipcMain.handle('github:open-auth-url', async (_event, authUrl) => {
+    try {
+      const parsed = new URL(String(authUrl || ''));
+      if (
+        parsed.protocol !== 'https:' ||
+        parsed.hostname.toLowerCase() !== 'github.com' ||
+        !parsed.pathname.startsWith('/login/oauth/')
+      ) {
+        return { ok: false, error: 'URL de autenticación de GitHub no permitida.' };
+      }
+      await shell.openExternal(parsed.toString());
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'URL de autenticación inválida.' };
+    }
+  });
 }
 
 function findAvailablePort(preferredPort = 3456) {
@@ -645,7 +711,24 @@ async function startEmbeddedProductionServer() {
   const serverPath = path.join(__dirname, '..', 'dist-server', 'server.mjs');
   serverModule = await import(pathToFileURL(serverPath).href);
   serverInstance = await serverModule.startServer(port);
-  return `http://127.0.0.1:${port}`;
+  return `http://localhost:${port}`;
+}
+
+function isAuthPopupUrl(rawUrl) {
+  if (!rawUrl || rawUrl === 'about:blank') return true;
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'https:') return false;
+    const host = parsed.hostname.toLowerCase();
+    return (
+      host === 'accounts.google.com' ||
+      host.endsWith('.firebaseapp.com') ||
+      host.endsWith('.web.app') ||
+      host === 'github.com'
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function createMainWindow() {
@@ -661,6 +744,33 @@ async function createMainWindow() {
       nodeIntegration: false,
       contextIsolation: true,
     },
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isAuthPopupUrl(url)) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 540,
+          height: 680,
+          autoHideMenuBar: true,
+          parent: mainWindow || undefined,
+          webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+          },
+        },
+      };
+    }
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+        shell.openExternal(parsed.toString()).catch(() => {});
+      }
+    } catch {
+      // Ignore malformed external URL
+    }
+    return { action: 'deny' };
   });
 
   try {
@@ -722,6 +832,12 @@ async function createMainWindow() {
 }
 
 app.whenReady().then(() => {
+  // Strip Electron/app tokens so Google Sign-In popup does not trigger disallowed_useragent
+  app.userAgentFallback = app.userAgentFallback
+    .replace(/\s*Electron\/[^\s]+/gi, '')
+    .replace(/\s*Aula[AÁ]gil\/[^\s]+/gi, '')
+    .replace(/\s*aula-agil\/[^\s]+/gi, '');
+
   setupAutoUpdater();
   registerUpdaterIpc();
   createMainWindow();

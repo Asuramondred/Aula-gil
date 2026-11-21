@@ -23,3 +23,7 @@ contextBridge.exposeInMainWorld('aulaAgilUpdater', {
 contextBridge.exposeInMainWorld('aulaAgilDrive', {
   openAuthUrl: (url) => ipcRenderer.invoke('drive:open-auth-url', url),
 });
+
+contextBridge.exposeInMainWorld('aulaAgilGitHub', {
+  openAuthUrl: (url) => ipcRenderer.invoke('github:open-auth-url', url),
+});

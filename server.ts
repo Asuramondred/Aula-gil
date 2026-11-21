@@ -32,6 +32,19 @@ import {
   uploadBackupToDrive,
 } from './server/googleDriveBackup.ts';
 import {
+  checkGitHubUpdatesLive,
+  disconnectGitHub,
+  getGitHubUpdatePublicStatus,
+  handleGitHubWebOAuthCallback,
+  linkGitHubRepo,
+  linkGitHubWithToken,
+  listGitHubUserRepos,
+  saveGitHubOAuthCredentials,
+  startGitHubDesktopOAuth,
+  startGitHubWebOAuth,
+  syncRuntimeUpdaterFile,
+} from './server/githubUpdates.ts';
+import {
   clearFailedAttempts,
   checkRateLimit,
   createSession,
@@ -893,6 +906,7 @@ function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunctio
 
 export async function startServer(customPort = PORT) {
   await initSqliteDb(getDataDir());
+  syncRuntimeUpdaterFile(getDataDir());
 
   const app = express();
   app.use(express.json({ limit: '15mb' }));
@@ -1184,6 +1198,45 @@ export async function startServer(customPort = PORT) {
     clearFailedAttempts('recover_questions');
     res.json({ ok: true });
   });
+
+  // Public GitHub OAuth popup callback (validated via cryptographic 1-time state)
+  app.get(
+    ['/api/github-updates/oauth/callback', '/api/github-updates/oauth/callback/'],
+    async (req: Request, res: Response) => {
+      const code = typeof req.query.code === 'string' ? req.query.code : '';
+      const state = typeof req.query.state === 'string' ? req.query.state : '';
+      const oauthError = typeof req.query.error === 'string' ? req.query.error : '';
+
+      if (oauthError || !code || !state) {
+        res.status(400).send(`<!DOCTYPE html><html lang="es"><body><script>
+          if (window.opener) {
+            window.opener.postMessage({ type: 'GITHUB_OAUTH_ERROR' }, '*');
+            window.close();
+          }
+        </script><p>Autorización cancelada. Puedes cerrar esta ventana.</p></body></html>`);
+        return;
+      }
+
+      try {
+        await handleGitHubWebOAuthCallback(code, state, getDataDir());
+        res.send(`<!DOCTYPE html><html lang="es"><body><script>
+          if (window.opener) {
+            window.opener.postMessage({ type: 'GITHUB_OAUTH_SUCCESS' }, '*');
+            window.close();
+          } else {
+            window.location.href = '/';
+          }
+        </script><p>Cuenta de GitHub vinculada correctamente. Esta ventana se cerrará automáticamente.</p></body></html>`);
+      } catch {
+        res.status(400).send(`<!DOCTYPE html><html lang="es"><body><script>
+          if (window.opener) {
+            window.opener.postMessage({ type: 'GITHUB_OAUTH_ERROR' }, '*');
+            window.close();
+          }
+        </script><p>No se pudo completar la vinculación con GitHub. Cierra esta ventana e intenta de nuevo.</p></body></html>`);
+      }
+    }
+  );
 
   // Protect all workspace, settings, backup, profile & AI routes
   app.use('/api', requireAuth);
@@ -2745,156 +2798,6 @@ export async function startServer(customPort = PORT) {
     }
   });
 
-  app.get('/api/updates/check-github', async (_req: Request, res: Response) => {
-    try {
-      const pkgFile = path.resolve(__dirname, 'package.json');
-      const altPkgFile = path.resolve(__dirname, '..', 'package.json');
-      const resolvedPkg = fs.existsSync(pkgFile) ? pkgFile : altPkgFile;
-      const currentVersion = fs.existsSync(resolvedPkg)
-        ? String(JSON.parse(fs.readFileSync(resolvedPkg, 'utf-8')).version || '1.0.0')
-        : '1.0.0';
-
-      const ymlCandidates = [
-        path.resolve(__dirname, 'electron-builder.yml'),
-        path.resolve(__dirname, '..', 'electron-builder.yml'),
-      ];
-      let owner = 'TU_USUARIO_GITHUB';
-      let repo = 'NOMBRE_DEL_REPO';
-      for (const cand of ymlCandidates) {
-        if (!fs.existsSync(cand)) continue;
-        const yml = fs.readFileSync(cand, 'utf-8');
-        const ownerM = yml.match(/^\s*(?:-\s*)?owner:\s*["']?([^"'\r\n#]+)["']?/m);
-        const repoM = yml.match(/^\s*(?:-\s*)?repo:\s*["']?([^"'\r\n#]+)["']?/m);
-        if (ownerM?.[1]) owner = ownerM[1].trim();
-        if (repoM?.[1]) repo = repoM[1].trim();
-        break;
-      }
-
-      const repoSlug = `${owner}/${repo}`;
-      const isPlaceholder =
-        !owner ||
-        !repo ||
-        owner === 'TU_USUARIO_GITHUB' ||
-        repo === 'NOMBRE_DEL_REPO';
-
-      if (isPlaceholder) {
-        res.json({
-          currentVersion,
-          status: 'unconfigured',
-          repoSlug,
-          availableVersion: null,
-          releaseNotes: '',
-          directDownloadUrl: null,
-          requiresManualDownload: true,
-          lastCheckedAt: new Date().toISOString(),
-          error: null,
-          message:
-            'Configura tu usuario y repositorio de GitHub en electron-builder.yml para verificar versiones.',
-        });
-        return;
-      }
-
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 9000);
-      try {
-        const ghRes = await fetch(
-          `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(
-            repo
-          )}/releases/latest`,
-          {
-            headers: {
-              Accept: 'application/vnd.github+json',
-              'User-Agent': `AulaAgil/${currentVersion}`,
-            },
-            signal: controller.signal,
-          }
-        );
-        if (ghRes.status === 404) {
-          res.json({
-            currentVersion,
-            status: 'up-to-date',
-            repoSlug,
-            availableVersion: null,
-            releaseNotes: '',
-            directDownloadUrl: null,
-            requiresManualDownload: true,
-            lastCheckedAt: new Date().toISOString(),
-            error: null,
-            message: 'Aún no hay versiones publicadas en GitHub Releases.',
-          });
-          return;
-        }
-        if (!ghRes.ok) {
-          res.status(502).json({
-            error: 'No se pudieron consultar las actualizaciones en GitHub.',
-          });
-          return;
-        }
-        const release = (await ghRes.json()) as {
-          tag_name?: string;
-          name?: string;
-          body?: string;
-          published_at?: string;
-          html_url?: string;
-          assets?: Array<{ name?: string; browser_download_url?: string }>;
-        };
-        const remote = String(release.tag_name || release.name || '').replace(/^v/i, '');
-        const parseVer = (v: string) =>
-          v
-            .replace(/^v/i, '')
-            .split('-')[0]
-            .split('.')
-            .map((n) => parseInt(n, 10) || 0);
-        const pa = parseVer(remote);
-        const pb = parseVer(currentVersion);
-        let isNewer = false;
-        for (let i = 0; i < 3; i++) {
-          if ((pa[i] || 0) > (pb[i] || 0)) {
-            isNewer = true;
-            break;
-          }
-          if ((pa[i] || 0) < (pb[i] || 0)) break;
-        }
-
-        const safeNotes = String(release.body || '')
-          .replace(/<[^>]+>/g, '')
-          .trim();
-
-        const exeAsset = (release.assets || []).find((a) =>
-          String(a.name || '').toLowerCase().endsWith('.exe')
-        );
-
-        res.json({
-          currentVersion,
-          status: isNewer ? 'available' : 'up-to-date',
-          repoSlug,
-          availableVersion: isNewer ? remote : null,
-          releaseNotes: isNewer ? safeNotes : '',
-          releaseDate: release.published_at || null,
-          directDownloadUrl: isNewer
-            ? exeAsset?.browser_download_url || release.html_url || null
-            : null,
-          requiresManualDownload: true,
-          lastCheckedAt: new Date().toISOString(),
-          error: null,
-          message: isNewer
-            ? `Nueva versión ${remote} disponible en GitHub Releases.`
-            : 'Ya cuentas con la última versión instalada.',
-        });
-      } finally {
-        clearTimeout(timeout);
-      }
-    } catch {
-      res.status(503).json({ error: 'Sin conexión para verificar actualizaciones' });
-    }
-  });
-
-  // --- Google Drive Cloud Backup Routes ---
-  const getDriveTokenHeader = (req: Request): string | undefined => {
-    const raw = req.headers['x-drive-access-token'];
-    return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
-  };
-
   const getPkgVersion = (): string => {
     try {
       const p1 = path.resolve(__dirname, 'package.json');
@@ -2907,6 +2810,129 @@ export async function startServer(customPort = PORT) {
       // fallback
     }
     return '1.0.0';
+  };
+
+  app.get('/api/updates/check-github', async (_req: Request, res: Response) => {
+    try {
+      const result = await checkGitHubUpdatesLive(getPkgVersion());
+      res.json(result);
+    } catch {
+      res.status(503).json({ error: 'Sin conexión para verificar actualizaciones' });
+    }
+  });
+
+  // --- GitHub Repository & OAuth Linking Routes for Updates ---
+  app.get('/api/github-updates/status', (_req: Request, res: Response) => {
+    res.json(getGitHubUpdatePublicStatus());
+  });
+
+  app.patch('/api/github-updates/credentials', (req: Request, res: Response) => {
+    try {
+      const { clientId, clientSecret, clearOAuthCredentials } = req.body ?? {};
+      const status = saveGitHubOAuthCredentials({
+        clientId: typeof clientId === 'string' ? clientId : undefined,
+        clientSecret: typeof clientSecret === 'string' ? clientSecret : undefined,
+        clearOAuthCredentials: Boolean(clearOAuthCredentials),
+      });
+      res.json(status);
+    } catch (err) {
+      res.status(400).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'No se pudieron guardar las credenciales OAuth de GitHub.',
+      });
+    }
+  });
+
+  app.post('/api/github-updates/link-repo', async (req: Request, res: Response) => {
+    try {
+      const { repoInput, accessToken } = req.body ?? {};
+      const status = await linkGitHubRepo(
+        {
+          repoInput: typeof repoInput === 'string' ? repoInput : '',
+          accessToken: typeof accessToken === 'string' ? accessToken : undefined,
+        },
+        getDataDir()
+      );
+      res.json(status);
+    } catch (err) {
+      res.status(400).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'No se pudo vincular el repositorio de GitHub.',
+      });
+    }
+  });
+
+  app.post('/api/github-updates/link-token', async (req: Request, res: Response) => {
+    try {
+      const { accessToken } = req.body ?? {};
+      const status = await linkGitHubWithToken(
+        typeof accessToken === 'string' ? accessToken : '',
+        getDataDir()
+      );
+      res.json(status);
+    } catch (err) {
+      res.status(400).json({
+        error:
+          err instanceof Error ? err.message : 'No se pudo validar el token de GitHub.',
+      });
+    }
+  });
+
+  app.get('/api/github-updates/repos', async (_req: Request, res: Response) => {
+    try {
+      const repos = await listGitHubUserRepos();
+      res.json({ repos });
+    } catch (err) {
+      res.status(400).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'No se pudieron obtener los repositorios de GitHub.',
+      });
+    }
+  });
+
+  app.post('/api/github-updates/oauth/start-web', (req: Request, res: Response) => {
+    try {
+      const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
+      const host = req.get('host') || 'localhost:3000';
+      const fallbackOrigin = `${proto}://${host}`;
+      const result = startGitHubWebOAuth(fallbackOrigin);
+      res.json(result);
+    } catch (err) {
+      res.status(400).json({
+        error:
+          err instanceof Error ? err.message : 'No se pudo iniciar OAuth de GitHub.',
+      });
+    }
+  });
+
+  app.post('/api/github-updates/oauth/start-desktop', async (_req: Request, res: Response) => {
+    try {
+      const result = await startGitHubDesktopOAuth(getDataDir());
+      res.json(result);
+    } catch (err) {
+      res.status(400).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'No se pudo iniciar OAuth de escritorio con GitHub.',
+      });
+    }
+  });
+
+  app.post('/api/github-updates/disconnect', (_req: Request, res: Response) => {
+    res.json(disconnectGitHub(getDataDir()));
+  });
+
+  // --- Google Drive Cloud Backup Routes ---
+  const getDriveTokenHeader = (req: Request): string | undefined => {
+    const raw = req.headers['x-drive-access-token'];
+    return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
   };
 
   app.get('/api/drive-backup/status', (_req: Request, res: Response) => {
@@ -3156,10 +3182,14 @@ export async function startServer(customPort = PORT) {
   }
 
   return await new Promise<ReturnType<typeof app.listen>>((resolve) => {
-    const server = app.listen(customPort, '0.0.0.0', () => {
+    const onListening = () => {
       console.log(`AulaÁgil local server listening on http://localhost:${customPort}`);
       resolve(server);
-    });
+    };
+    const server =
+      process.env.LIBRETA_NO_AUTOSTART === '1'
+        ? app.listen(customPort, onListening)
+        : app.listen(customPort, '0.0.0.0', onListening);
   });
 }
 

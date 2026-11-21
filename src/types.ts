@@ -402,11 +402,46 @@ export interface DriveBackupManifest {
   attachmentCount: number;
 }
 
+export interface GitHubUpdateConfigStatus {
+  connected: boolean;
+  authMode: 'none' | 'oauth' | 'pat' | 'public_repo';
+  hasOAuthConfigured: boolean;
+  oauthSource: 'env' | 'local' | 'none';
+  oauthClientId: string;
+  hasOAuthClientSecret: boolean;
+  hasAccessToken: boolean;
+  githubLogin: string;
+  githubName: string;
+  githubAvatar: string;
+  owner: string;
+  repo: string;
+  repoSlug: string;
+  repoPrivate: boolean;
+  yamlConfigured: boolean;
+  yamlRepoSlug: string;
+  callbackUrlHint: string;
+  updatedAt: string;
+}
+
+export interface GitHubRepoSummary {
+  id: number;
+  fullName: string;
+  owner: string;
+  name: string;
+  private: boolean;
+  description: string;
+  updatedAt: string;
+  htmlUrl: string;
+}
+
 declare global {
   const __APP_VERSION__: string;
   interface Window {
     aulaAgilUpdater?: AulaAgilUpdaterBridge;
     aulaAgilDrive?: {
+      openAuthUrl: (url: string) => Promise<{ ok: boolean; error?: string }>;
+    };
+    aulaAgilGitHub?: {
       openAuthUrl: (url: string) => Promise<{ ok: boolean; error?: string }>;
     };
   }
